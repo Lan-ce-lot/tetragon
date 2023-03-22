@@ -183,7 +183,6 @@ func tetragonExecute() error {
 	// Get observer bpf maps and programs directory
 	observerDir := getObserverDir()
 	option.Config.BpfDir = observerDir
-	option.Config.MapDir = observerDir
 
 	// Check if option to remove old BPF and maps is enabled.
 	if option.Config.ReleasePinned {
@@ -237,7 +236,7 @@ func tetragonExecute() error {
 	}
 
 	// Probe runtime configuration and do not fail on errors
-	obs.UpdateRuntimeConf(option.Config.MapDir)
+	obs.UpdateRuntimeConf(option.Config.BpfDir)
 
 	watcher, err := getWatcher()
 	if err != nil {
@@ -297,7 +296,7 @@ func tetragonExecute() error {
 	obs.LogPinnedBpf(observerDir)
 
 	// load base sensor
-	if err := base.GetInitialSensor().Load(ctx, observerDir, observerDir, option.Config.CiliumDir); err != nil {
+	if err := base.GetInitialSensor().Load(ctx, observerDir, option.Config.CiliumDir); err != nil {
 		return err
 	}
 
@@ -316,7 +315,7 @@ func tetragonExecute() error {
 
 		// NB: simlarly to the base sensor we are loading this
 		// statically (instead of the sensor manager).
-		if err := sens.Load(ctx, observerDir, observerDir, option.Config.CiliumDir); err != nil {
+		if err := sens.Load(ctx, observerDir, option.Config.CiliumDir); err != nil {
 			return err
 		}
 	}

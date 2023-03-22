@@ -294,7 +294,7 @@ func (k *Observer) Start(ctx context.Context) error {
 // InitSensorManager starts the sensor controller and stt manager.
 func (k *Observer) InitSensorManager() error {
 	var err error
-	SensorManager, err = sensors.StartSensorManager(option.Config.BpfDir, option.Config.MapDir, option.Config.CiliumDir)
+	SensorManager, err = sensors.StartSensorManager(option.Config.BpfDir, option.Config.CiliumDir)
 	return err
 }
 
@@ -346,7 +346,7 @@ func (k *Observer) PrintStats() {
 }
 
 func (k *Observer) RemovePrograms() {
-	RemovePrograms(option.Config.BpfDir, option.Config.MapDir)
+	RemovePrograms(option.Config.BpfDir)
 }
 
 // Log Active pinned BPF resources
