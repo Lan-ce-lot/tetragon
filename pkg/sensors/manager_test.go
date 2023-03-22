@@ -35,7 +35,7 @@ func TestAddPolicy(t *testing.T) {
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "")
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {
@@ -63,7 +63,7 @@ func TestAddPolicies(t *testing.T) {
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "")
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {
@@ -94,7 +94,7 @@ func TestAddPolicySpecError(t *testing.T) {
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "")
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {
@@ -126,7 +126,7 @@ func TestAddPolicyLoadError(t *testing.T) {
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "")
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {

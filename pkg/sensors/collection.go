@@ -44,7 +44,7 @@ func (c *collection) load(ctx context.Context, bpfDir, mapDir, ciliumDir string,
 			break
 		}
 
-		if err = sensor.Load(ctx, bpfDir, mapDir, ciliumDir); err != nil {
+		if err = sensor.Load(ctx, bpfDir, ciliumDir); err != nil {
 			err = fmt.Errorf("sensor %s from collection %s failed to load: %s", sensor.Name, c.name, err)
 			break
 		}

@@ -21,7 +21,7 @@ type handler struct {
 	pfState      policyfilter.State
 }
 
-func newHandler(bpfDir, mapDir, ciliumDir string) (*handler, error) {
+func newHandler(bpfDir, ciliumDir string) (*handler, error) {
 	pfState, err := policyfilter.GetState()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize policy filter state: %w", err)
@@ -30,7 +30,6 @@ func newHandler(bpfDir, mapDir, ciliumDir string) (*handler, error) {
 	return &handler{
 		collections: map[string]collection{},
 		bpfDir:      bpfDir,
-		mapDir:      mapDir,
 		ciliumDir:   ciliumDir,
 		pfState:     pfState,
 		// NB: policy ids start with 1, so that they can be used for filtering. In policy

@@ -27,13 +27,13 @@ type SensorStatus struct {
 // The purpose of this goroutine is to serialize loading and unloading of
 // sensors as requested from different goroutines (e.g., different GRPC
 // clients).
-func StartSensorManager(bpfDir, mapDir, ciliumDir string) (*Manager, error) {
+func StartSensorManager(bpfDir, ciliumDir string) (*Manager, error) {
 	c := make(chan sensorOp)
 	m := Manager{
 		STTManager: sttManager.StartSttManager(),
 		sensorCtl:  c,
 	}
-	handler, err := newHandler(bpfDir, mapDir, ciliumDir)
+	handler, err := newHandler(bpfDir, ciliumDir)
 	if err != nil {
 		return nil, err
 	}

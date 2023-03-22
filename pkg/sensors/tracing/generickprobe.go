@@ -599,7 +599,7 @@ func loadSingleKprobeSensor(id idtable.EntryID, bpfDir, mapDir string, load *pro
 
 	sensors.AllPrograms = append(sensors.AllPrograms, load)
 
-	if err := program.LoadKprobeProgram(bpfDir, mapDir, load, verbose); err == nil {
+	if err := program.LoadKprobeProgram(bpfDir, load, verbose); err == nil {
 		logger.GetLogger().Infof("Loaded generic kprobe program: %s -> %s", load.Name, load.Attach)
 	} else {
 		return err
