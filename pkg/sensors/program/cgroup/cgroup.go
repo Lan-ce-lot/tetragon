@@ -16,7 +16,7 @@ var (
 )
 
 func LoadSockOpt(
-	bpfDir, mapDir, ciliumDir string,
+	bpfDir, ciliumDir string,
 	load *program.Program, verbose int,
 ) error {
 	return LoadCgroupProgram(bpfDir, ciliumDir, load, verbose)

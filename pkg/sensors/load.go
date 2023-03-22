@@ -56,7 +56,7 @@ const (
 )
 
 // LoadConfig loads the default sensor, including any from the configuration file.
-func LoadConfig(ctx context.Context, bpfDir, mapDir, ciliumDir string, sens []*Sensor) error {
+func LoadConfig(ctx context.Context, bpfDir, ciliumDir string, sens []*Sensor) error {
 	load := mergeSensors(sens)
 	if err := load.Load(ctx, bpfDir, ciliumDir); err != nil {
 		return fmt.Errorf("tetragon, aborting could not load BPF programs: %w", err)

@@ -30,7 +30,7 @@ func (c *collection) info() string {
 
 // load will attempt to load a collection of sensors. If loading one of the sensors fails, it
 // will attempt to unload the already loaded sensors.
-func (c *collection) load(ctx context.Context, bpfDir, mapDir, ciliumDir string, cbArg *LoadArg) error {
+func (c *collection) load(ctx context.Context, bpfDir, ciliumDir string, cbArg *LoadArg) error {
 
 	var err error
 	for _, sensor := range c.sensors {

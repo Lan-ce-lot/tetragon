@@ -191,13 +191,13 @@ func LoadKprobeProgram(bpfDir string, load *Program, verbose int) error {
 	return loadProgram(bpfDir, []string{bpfDir}, load, KprobeAttach(load), ci, verbose)
 }
 
-func LoadTailCallProgram(bpfDir, mapDir string, load *Program, verbose int) error {
-	return loadProgram(bpfDir, []string{mapDir}, load, NoAttach(load), nil, verbose)
+func LoadTailCallProgram(bpfDir string, load *Program, verbose int) error {
+	return loadProgram(bpfDir, []string{bpfDir}, load, NoAttach(load), nil, verbose)
 }
 
-func LoadMultiKprobeProgram(bpfDir, mapDir string, load *Program, verbose int) error {
+func LoadMultiKprobeProgram(bpfDir string, load *Program, verbose int) error {
 	ci := &customInstall{fmt.Sprintf("%s-kp_calls", load.PinPath), "kprobe"}
-	return loadProgram(bpfDir, []string{mapDir}, load, MultiKprobeAttach(load), ci, verbose)
+	return loadProgram(bpfDir, []string{bpfDir}, load, MultiKprobeAttach(load), ci, verbose)
 }
 
 func slimVerifierError(errStr string) string {

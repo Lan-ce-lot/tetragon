@@ -504,7 +504,7 @@ func ReloadGenericTracepointSelectors(p *program.Program, conf *v1alpha1.Tracepo
 	return nil
 }
 
-func LoadGenericTracepointSensor(bpfDir, mapDir string, load *program.Program, version, verbose int) error {
+func LoadGenericTracepointSensor(bpfDir string, load *program.Program, version, verbose int) error {
 
 	tracepointLog = logger.GetLogger()
 
@@ -545,7 +545,7 @@ func LoadGenericTracepointSensor(bpfDir, mapDir string, load *program.Program, v
 		return err
 	}
 
-	m, err := ebpf.LoadPinnedMap(filepath.Join(mapDir, base.NamesMap.Name), nil)
+	m, err := ebpf.LoadPinnedMap(filepath.Join(bpfDir, base.NamesMap.Name), nil)
 	if err != nil {
 		return err
 	}
@@ -671,5 +671,5 @@ func handleGenericTracepoint(r *bytes.Reader) ([]observer.Event, error) {
 }
 
 func (t *observerTracepointSensor) LoadProbe(args sensors.LoadProbeArgs) error {
-	return LoadGenericTracepointSensor(args.BPFDir, args.MapDir, args.Load, args.Version, args.Verbose)
+	return LoadGenericTracepointSensor(args.BPFDir, args.Load, args.Version, args.Verbose)
 }
