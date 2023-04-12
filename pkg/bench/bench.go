@@ -50,6 +50,7 @@ type Arguments struct {
 	PrintEvents bool
 	JSONEncode  bool
 	Baseline    bool
+	RBSize      int
 }
 
 func (args *Arguments) String() string {
@@ -82,6 +83,8 @@ func runTetragon(ctx context.Context, configFile string, args *Arguments, summar
 		}
 	}
 
+	option.Config.RBSize = args.RBSize
+
 	option.Config.BpfDir = bpf.MapPrefixPath()
 	option.Config.MapDir = bpf.MapPrefixPath()
 	obs := observer.NewObserver(configFile)
@@ -91,6 +94,10 @@ func runTetragon(ctx context.Context, configFile string, args *Arguments, summar
 	}
 
 	if err := btf.InitCachedBTF(ctx, option.Config.HubbleLib, ""); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := observer.InitDataCache(1024); err != nil {
 		log.Fatal(err)
 	}
 

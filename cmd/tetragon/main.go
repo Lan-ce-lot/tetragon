@@ -35,7 +35,6 @@ import (
 	"github.com/cilium/tetragon/pkg/process"
 	"github.com/cilium/tetragon/pkg/ratelimit"
 	"github.com/cilium/tetragon/pkg/rthooks"
-	"github.com/cilium/tetragon/pkg/sensors"
 	"github.com/cilium/tetragon/pkg/sensors/base"
 	"github.com/cilium/tetragon/pkg/sensors/program"
 	"github.com/cilium/tetragon/pkg/server"
@@ -87,21 +86,21 @@ func getFieldFilters() ([]*tetragon.FieldFilter, error) {
 
 func saveInitInfo() error {
 	info := bugtool.InitInfo{
-		ExportFname: exportFilename,
+		ExportFname: option.Config.ExportFilename,
 		LibDir:      option.Config.HubbleLib,
 		BtfFname:    option.Config.BTF,
-		MetricsAddr: metricsServer,
-		ServerAddr:  serverAddress,
+		MetricsAddr: option.Config.MetricsServer,
+		ServerAddr:  option.Config.ServerAddress,
 	}
 	return bugtool.SaveInitInfo(&info)
 }
 
 func stopProfile() {
-	if memProfile != "" {
-		log.WithField("file", memProfile).Info("Stopping mem profiling")
-		f, err := os.Create(memProfile)
+	if option.Config.MemProfile != "" {
+		log.WithField("file", option.Config.MemProfile).Info("Stopping mem profiling")
+		f, err := os.Create(option.Config.MemProfile)
 		if err != nil {
-			log.WithField("file", memProfile).Fatal("Could not create memory profile: ", err)
+			log.WithField("file", option.Config.MemProfile).Fatal("Could not create memory profile: ", err)
 		}
 		defer f.Close()
 		// get up-to-date statistics
@@ -110,8 +109,8 @@ func stopProfile() {
 			log.Fatal("could not write memory profile: ", err)
 		}
 	}
-	if cpuProfile != "" {
-		log.WithField("file", cpuProfile).Info("Stopping cpu profiling")
+	if option.Config.CpuProfile != "" {
+		log.WithField("file", option.Config.CpuProfile).Info("Stopping cpu profiling")
 		pprof.StopCPUProfile()
 	}
 }
@@ -140,6 +139,18 @@ func tetragonExecute() error {
 	log.WithField("version", version.Version).Info("Starting tetragon")
 	log.WithField("config", viper.AllSettings()).Info("config settings")
 
+	if option.Config.ForceLargeProgs && option.Config.ForceSmallProgs {
+		log.Fatalf("Can't specify --force-small-progs and --force-large-progs together")
+	}
+
+	if option.Config.ForceLargeProgs {
+		log.Info("Force loading large programs")
+	}
+
+	if option.Config.ForceSmallProgs {
+		log.Info("Force loading smallprograms")
+	}
+
 	if viper.IsSet(keyNetnsDir) {
 		defaults.NetnsDir = viper.GetString(keyNetnsDir)
 	}
@@ -149,21 +160,21 @@ func tetragonExecute() error {
 	bpf.CheckOrMountDebugFS()
 	bpf.CheckOrMountCgroup2()
 
-	if pprofAddr != "" {
+	if option.Config.PprofAddr != "" {
 		go func() {
-			if err := servePprof(pprofAddr); err != nil {
+			if err := servePprof(option.Config.PprofAddr); err != nil {
 				log.Warnf("serving pprof via http: %v", err)
 			}
 		}()
 	}
 
 	// Start profilers first as we have to capture them in signal handling
-	if memProfile != "" {
-		log.WithField("file", memProfile).Info("Starting mem profiling")
+	if option.Config.MemProfile != "" {
+		log.WithField("file", option.Config.MemProfile).Info("Starting mem profiling")
 	}
 
-	if cpuProfile != "" {
-		f, err := os.Create(cpuProfile)
+	if option.Config.CpuProfile != "" {
+		f, err := os.Create(option.Config.CpuProfile)
 		if err != nil {
 			log.Fatal("could not create CPU profile: ", err)
 		}
@@ -172,7 +183,7 @@ func tetragonExecute() error {
 		if err := pprof.StartCPUProfile(f); err != nil {
 			log.Fatal("could not start CPU profile: ", err)
 		}
-		log.WithField("file", cpuProfile).Info("Starting cpu profiling")
+		log.WithField("file", option.Config.CpuProfile).Info("Starting cpu profiling")
 	}
 
 	defer stopProfile()
@@ -196,7 +207,7 @@ func tetragonExecute() error {
 	}
 
 	// Get observer from configFile
-	obs := observer.NewObserver(configFile)
+	obs := observer.NewObserver(option.Config.ConfigFile)
 	defer func() {
 		obs.PrintStats()
 		obs.RemovePrograms()
@@ -228,12 +239,12 @@ func tetragonExecute() error {
 		return err
 	}
 
-	if err := observer.InitDataCache(dataCacheSize); err != nil {
+	if err := observer.InitDataCache(option.Config.DataCacheSize); err != nil {
 		return err
 	}
 
-	if metricsServer != "" {
-		go metrics.EnableMetrics(metricsServer)
+	if option.Config.MetricsServer != "" {
+		go metrics.EnableMetrics(option.Config.MetricsServer)
 	}
 
 	// Probe runtime configuration and do not fail on errors
@@ -248,7 +259,7 @@ func tetragonExecute() error {
 		return err
 	}
 
-	if err := process.InitCache(ctx, watcher, option.Config.EnableCilium, processCacheSize); err != nil {
+	if err := process.InitCache(ctx, watcher, option.Config.EnableCilium, option.Config.ProcessCacheSize); err != nil {
 		return err
 	}
 
@@ -278,16 +289,16 @@ func tetragonExecute() error {
 	if err != nil {
 		return err
 	}
-	if err = Serve(ctx, serverAddress, pm.Server); err != nil {
+	if err = Serve(ctx, option.Config.ServerAddress, pm.Server); err != nil {
 		return err
 	}
-	if exportFilename != "" {
+	if option.Config.ExportFilename != "" {
 		if err = startExporter(ctx, pm.Server); err != nil {
 			return err
 		}
 	}
 
-	log.WithField("enabled", exportFilename != "").WithField("fileName", exportFilename).Info("Exporter configuration")
+	log.WithField("enabled", option.Config.ExportFilename != "").WithField("fileName", option.Config.ExportFilename).Info("Exporter configuration")
 	obs.AddListener(pm)
 	saveInitInfo()
 	if option.Config.EnableK8s {
@@ -302,21 +313,14 @@ func tetragonExecute() error {
 	}
 
 	// load sensor from configuration file
-	if len(configFile) > 0 {
-		var sens *sensors.Sensor
-		tp, err := config.PolicyFromYamlFilename(configFile)
+	if len(option.Config.ConfigFile) > 0 {
+		tp, err := config.PolicyFromYamlFilename(option.Config.ConfigFile)
 		if err != nil {
 			return err
 		}
 
-		sens, err = sensors.GetMergedSensorFromParserPolicy(tp)
+		err = observer.SensorManager.AddTracingPolicy(ctx, tp)
 		if err != nil {
-			return err
-		}
-
-		// NB: simlarly to the base sensor we are loading this
-		// statically (instead of the sensor manager).
-		if err := sens.Load(ctx, observerDir, observerDir, option.Config.CiliumDir); err != nil {
 			return err
 		}
 	}
@@ -378,10 +382,10 @@ func startExporter(ctx context.Context, server *server.Server) error {
 		return err
 	}
 	writer := &lumberjack.Logger{
-		Filename:   exportFilename,
-		MaxSize:    exportFileMaxSizeMB,
-		MaxBackups: exportFileMaxBackups,
-		Compress:   exportFileCompress,
+		Filename:   option.Config.ExportFilename,
+		MaxSize:    option.Config.ExportFileMaxSizeMB,
+		MaxBackups: option.Config.ExportFileMaxBackups,
+		Compress:   option.Config.ExportFileCompress,
 	}
 
 	// For non k8s deployments we explicitly want log files
@@ -390,30 +394,30 @@ func startExporter(ctx context.Context, server *server.Server) error {
 		writer.FileMode = os.FileMode(0600)
 	}
 
-	finfo, err := os.Stat(filepath.Clean(exportFilename))
+	finfo, err := os.Stat(filepath.Clean(option.Config.ExportFilename))
 	if err == nil && finfo.IsDir() {
 		// Error if exportFilename points to a directory
 		return fmt.Errorf("passed export JSON logs file point to a directory")
 	}
-	logFile := filepath.Base(exportFilename)
-	logsDir, err := filepath.Abs(filepath.Dir(filepath.Clean(exportFilename)))
+	logFile := filepath.Base(option.Config.ExportFilename)
+	logsDir, err := filepath.Abs(filepath.Dir(filepath.Clean(option.Config.ExportFilename)))
 	if err != nil {
-		log.WithError(err).Warnf("Failed to get absolute path of exported JSON logs '%s'", exportFilename)
+		log.WithError(err).Warnf("Failed to get absolute path of exported JSON logs '%s'", option.Config.ExportFilename)
 		// Do not fail; we let lumberjack handle this. We want to
 		// log the rotate logs operation.
-		logsDir = filepath.Dir(exportFilename)
+		logsDir = filepath.Dir(option.Config.ExportFilename)
 	}
 
-	if exportFileRotationInterval < 0 {
+	if option.Config.ExportFileRotationInterval < 0 {
 		// Passed an invalid interval let's error out
-		return fmt.Errorf("frequency '%s' at which to rotate JSON export files is negative", exportFileRotationInterval.String())
-	} else if exportFileRotationInterval > 0 {
+		return fmt.Errorf("frequency '%s' at which to rotate JSON export files is negative", option.Config.ExportFileRotationInterval.String())
+	} else if option.Config.ExportFileRotationInterval > 0 {
 		log.WithFields(logrus.Fields{
 			"directory": logsDir,
-			"frequency": exportFileRotationInterval.String(),
+			"frequency": option.Config.ExportFileRotationInterval.String(),
 		}).Info("Periodically rotating JSON export files")
 		go func() {
-			ticker := time.NewTicker(exportFileRotationInterval)
+			ticker := time.NewTicker(option.Config.ExportFileRotationInterval)
 			for {
 				select {
 				case <-ctx.Done():
@@ -425,7 +429,7 @@ func startExporter(ctx context.Context, server *server.Server) error {
 					}).Info("Rotating JSON logs export")
 					if rotationErr := writer.Rotate(); rotationErr != nil {
 						log.WithError(rotationErr).
-							WithField("file", exportFilename).
+							WithField("file", option.Config.ExportFilename).
 							Warn("Failed to rotate JSON export file")
 					}
 				}
@@ -435,14 +439,14 @@ func startExporter(ctx context.Context, server *server.Server) error {
 
 	encoder := json.NewEncoder(writer)
 	var rateLimiter *ratelimit.RateLimiter
-	if exportRateLimit >= 0 {
-		rateLimiter = ratelimit.NewRateLimiter(ctx, 1*time.Minute, exportRateLimit, encoder)
+	if option.Config.ExportRateLimit >= 0 {
+		rateLimiter = ratelimit.NewRateLimiter(ctx, 1*time.Minute, option.Config.ExportRateLimit, encoder)
 	}
 	var aggregationOptions *tetragon.AggregationOptions
-	if enableExportAggregation {
+	if option.Config.EnableExportAggregation {
 		aggregationOptions = &tetragon.AggregationOptions{
-			WindowSize:        durationpb.New(exportAggregationWindowSize),
-			ChannelBufferSize: exportAggregationBufferSize,
+			WindowSize:        durationpb.New(option.Config.ExportAggregationWindowSize),
+			ChannelBufferSize: option.Config.ExportAggregationBufferSize,
 		}
 	}
 	req := tetragon.GetEventsRequest{AllowList: allowList, DenyList: denyList, AggregationOptions: aggregationOptions, FieldFilters: fieldFilters}
@@ -453,10 +457,10 @@ func startExporter(ctx context.Context, server *server.Server) error {
 	return nil
 }
 
-func Serve(ctx context.Context, listenAddr string, server *server.Server) error {
+func Serve(ctx context.Context, listenAddr string, srv *server.Server) error {
 	grpcServer := grpc.NewServer()
-	tetragon.RegisterFineGuidanceSensorsServer(grpcServer, server)
-	proto, addr, err := splitListenAddr(listenAddr)
+	tetragon.RegisterFineGuidanceSensorsServer(grpcServer, srv)
+	proto, addr, err := server.SplitListenAddr(listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to parse listen address: %w", err)
 	}
@@ -555,6 +559,7 @@ func execute() error {
 	flags.Int(keyProcessCacheSize, 65536, "Size of the process cache")
 	flags.Int(keyDataCacheSize, 1024, "Size of the data events cache")
 	flags.Bool(keyForceSmallProgs, false, "Force loading small programs, even in kernels with >= 5.3 versions")
+	flags.Bool(keyForceLargeProgs, false, "Force loading large programs, even in kernels with < 5.3 versions")
 	flags.String(keyExportFilename, "", "Filename for JSON export. Disabled by default")
 	flags.Int(keyExportFileMaxSizeMB, 10, "Size in MB for rotating JSON export files")
 	flags.Duration(keyExportFileRotationInterval, 0, "Interval at which to rotate JSON export files in addition to rotating them by size")
@@ -617,7 +622,8 @@ func execute() error {
 
 	// Provide option to enable policy filtering. Because the code is new,
 	// this is set to false by default.
-	flags.Bool(keyEnablePolicyFilter, false, "Enable policy (beta) filter code")
+	flags.Bool(keyEnablePolicyFilter, false, "Enable policy filter code (beta)")
+	flags.Bool(keyEnablePolicyFilterDebug, false, "Enable policy filter debug messages")
 
 	viper.BindPFlags(flags)
 	return rootCmd.Execute()

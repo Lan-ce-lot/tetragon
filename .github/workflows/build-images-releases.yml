@@ -9,8 +9,8 @@ on:
       - 'docs/**'
 
 permissions:
-  # To be able to access the repository with `actions/checkout`
-  contents: read
+  # To be able to access the repository with `actions/checkout` and upload release artifacts
+  contents: write
   # Required to generate OIDC tokens for `sigstore/cosign-installer` authentication
   id-token: write
 
@@ -25,7 +25,7 @@ jobs:
             dockerfile: ./Dockerfile
 
           - name: tetragon-operator
-            dockerfile: ./operator.Dockerfile
+            dockerfile: ./Dockerfile.operator
 
     steps:
       # https://github.com/docker/setup-qemu-action
@@ -76,9 +76,11 @@ jobs:
             quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ github.sha }}
 
       - name: Install Cosign
+        if: ${{ startsWith(steps.tag.outputs.tag, 'v') }}
         uses: sigstore/cosign-installer@9becc617647dfa20ae7b1151972e9b3a2c338a2b
 
       - name: Sign Container Image
+        if: ${{ startsWith(steps.tag.outputs.tag, 'v') }}
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
@@ -86,6 +88,7 @@ jobs:
           cosign sign quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci@${{ steps.docker_build_release.outputs.digest }}
 
       - name: Install Bom
+        if: ${{ startsWith(steps.tag.outputs.tag, 'v') }}
         shell: bash
         run: |
           curl -L https://github.com/kubernetes-sigs/bom/releases/download/v0.4.1/bom-linux-amd64 -o bom
@@ -93,6 +96,7 @@ jobs:
           sudo chmod +x /usr/local/bin/bom
 
       - name: Generate SBOM
+        if: ${{ startsWith(steps.tag.outputs.tag, 'v') }}
         shell: bash
         # To-Do: Format SBOM output to JSON after a new version of cosign is released after v1.13.1. Ref: https://github.com/sigstore/cosign/pull/2479
         run: |
@@ -101,11 +105,13 @@ jobs:
           --image=quay.io/${{ github.repository_owner }}/${{ matrix.name }}:${{ steps.tag.outputs.tag }}
 
       - name: Attach SBOM to container image
+        if: ${{ startsWith(steps.tag.outputs.tag, 'v') }}
         run: |
           cosign attach sbom --sbom sbom_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ github.repository_owner }}/${{ matrix.name }}@${{ steps.docker_build_release.outputs.digest }}
           cosign attach sbom --sbom sbom_${{ matrix.name }}_${{ steps.tag.outputs.tag }}.spdx quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci@${{ steps.docker_build_release.outputs.digest }}
 
       - name: Sign SBOM Image
+        if: ${{ startsWith(steps.tag.outputs.tag, 'v') }}
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
@@ -182,22 +188,14 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
+          name: Release ${{ github.ref }}
           draft: true
           prerelease: false
           body: |
             Note for maintainers:: Please update the description with the actual release notes (see RELEASE.md for instructions).
-
-      - name: Upload the artifacts
-        id: upload-release-artifacts
-        uses: skx/github-action-publish-binaries@b9ca5643b2f1d7371a6cba7f35333f1461bbc703
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          releaseId: ${{ steps.create_release.outputs.id }}
-          args: 'release/*'
+          files: |
+            release/*

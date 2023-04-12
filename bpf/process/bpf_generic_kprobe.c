@@ -45,14 +45,14 @@ struct filter_map_value {
 /* Arrays of size 1 will be rewritten to direct loads in verifier */
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, MAX_ENTRIES_CONFIG);
+	__uint(max_entries, 1);
 	__type(key, int);
 	__type(value, struct filter_map_value);
 } filter_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, MAX_ENTRIES_CONFIG);
+	__uint(max_entries, 1);
 	__type(key, __u32);
 	__type(value, struct event_config);
 } config_map SEC(".maps");
@@ -73,6 +73,8 @@ generic_kprobe_start_process_filter(void *ctx)
 	msg->idx = get_index(ctx);
 	config = map_lookup_elem(&config_map, &msg->idx);
 	if (!config)
+		return 0;
+	if (!generic_process_filter_binary(config))
 		return 0;
 	if (!policy_filter_check(config->policy_id))
 		return 0;

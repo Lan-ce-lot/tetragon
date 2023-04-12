@@ -11,8 +11,10 @@ PROGS = sigkill-tester \
 	nop \
 	exit-leader \
 	exit-tester \
+	exit-code \
 	uprobe-test-1 \
-	uprobe-test-2
+	uprobe-test-2 \
+	lseek-pipe
 
 all: $(PROGS)
 
@@ -28,7 +30,13 @@ exit-tester: exit-tester.c
 sigkill-unprivileged-user-ns-tester: sigkill-unprivileged-user-ns-tester.c
 	$(GCC) -Wall $< -o $@ -lcap
 
+nop: nop.c
+	$(GCC) -Wall $< -o $@ -lpthread
+
 exit-leader: exit-leader.c
+	$(GCC) -Wall $< -o $@ -lpthread
+
+exit-code: exit-code.c
 	$(GCC) -Wall $< -o $@ -lpthread
 
 libuprobe.so: uprobe-lib.c
@@ -40,6 +48,11 @@ uprobe-test-1: uprobe-test.c libuprobe.so
 uprobe-test-2: uprobe-test-1
 	cp uprobe-test-1 uprobe-test-2
 
+lseek-pipe: FORCE
+	go build -o lseek-pipe ./go/lseek-pipe
+
 .PHONY: clean
 clean:
 	rm -f $(PROGS)
+
+FORCE:

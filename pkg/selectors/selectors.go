@@ -37,7 +37,7 @@ type KernelSelectorState struct {
 	newBinVals    map[uint32]string              // these should be added in the names_map
 }
 
-func newKernelSelectorState() *KernelSelectorState {
+func NewKernelSelectorState() *KernelSelectorState {
 	return &KernelSelectorState{
 		matchBinaries: make(map[int]*MatchBinariesMappings),
 		newBinVals:    make(map[uint32]string),
@@ -113,6 +113,14 @@ func WriteSelectorUint64(k *KernelSelectorState, v uint64) {
 func WriteSelectorLength(k *KernelSelectorState, loff uint32) {
 	diff := k.off - loff
 	binary.LittleEndian.PutUint32(k.e[loff:], diff)
+}
+
+func WriteSelectorOffsetUint32(k *KernelSelectorState, loff uint32, val uint32) {
+	binary.LittleEndian.PutUint32(k.e[loff:], val)
+}
+
+func GetCurrentOffset(k *KernelSelectorState) uint32 {
+	return k.off
 }
 
 func WriteSelectorByteArray(k *KernelSelectorState, b []byte, size uint32) {
