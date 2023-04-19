@@ -4,7 +4,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.6.2
+    controller-gen.kubebuilder.io/version: v0.7.0
   creationTimestamp: null
   name: tracingpolicies.cilium.io
 spec:
@@ -172,6 +172,7 @@ spec:
                                   - Override
                                   - GetUrl
                                   - DnsLookup
+                                  - NoPost
                                   type: string
                                 argError:
                                   description: error value for override action
@@ -189,6 +190,10 @@ spec:
                                 argName:
                                   description: An arg index for the filename for fdInstall
                                     action
+                                  format: int32
+                                  type: integer
+                                argSig:
+                                  description: A signal number for signal action
                                   format: int32
                                   type: integer
                                 argUrl:
@@ -529,6 +534,7 @@ spec:
                                   - Override
                                   - GetUrl
                                   - DnsLookup
+                                  - NoPost
                                   type: string
                                 argError:
                                   description: error value for override action
@@ -546,6 +552,10 @@ spec:
                                 argName:
                                   description: An arg index for the filename for fdInstall
                                     action
+                                  format: int32
+                                  type: integer
+                                argSig:
+                                  description: A signal number for signal action
                                   format: int32
                                   type: integer
                                 argUrl:
@@ -831,6 +841,7 @@ spec:
                                   - Override
                                   - GetUrl
                                   - DnsLookup
+                                  - NoPost
                                   type: string
                                 argError:
                                   description: error value for override action
@@ -848,6 +859,10 @@ spec:
                                 argName:
                                   description: An arg index for the filename for fdInstall
                                     action
+                                  format: int32
+                                  type: integer
+                                argSig:
+                                  description: A signal number for signal action
                                   format: int32
                                   type: integer
                                 argUrl:

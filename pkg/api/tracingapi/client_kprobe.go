@@ -20,6 +20,8 @@ const (
 	ActionCopyFd     = 5
 	ActionGetUrl     = 6
 	ActionLookupDns  = 7
+	ActionNoPost     = 8
+	ActionSignal     = 9
 )
 
 const (
@@ -377,9 +379,9 @@ type EventConfig struct {
 	Arg           [EventConfigMaxArgs]int32  `align:"arg0"`
 	ArgM          [EventConfigMaxArgs]uint32 `align:"arg0m"`
 	ArgTpCtxOff   [EventConfigMaxArgs]uint32 `align:"t_arg0_ctx_off"`
-	Sigkill       uint32                     `align:"sigkill"`
 	Syscall       uint32                     `align:"syscall"`
 	ArgReturnCopy int32                      `align:"argreturncopy"`
 	ArgReturn     int32                      `align:"argreturn"`
 	PolicyID      uint32                     `align:"policy_id"`
+	Flags         uint32                     `align:"flags"`
 }

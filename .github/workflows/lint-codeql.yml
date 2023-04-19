@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Checkout code
         if: ${{ !github.event.pull_request }}
-        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab
         with:
           persist-credentials: false
       - name: Check code changes
@@ -50,13 +50,13 @@ jobs:
       security-events: write
     steps:
     - name: Checkout repo
-      uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+      uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab
       with:
         persist-credentials: false
         fetch-depth: 1
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@959cbb7472c4d4ad70cdfe6f4976053fe48ab394
+      uses: github/codeql-action/init@d186a2a36cc67bfa1b860e6170d37fb9634742c7
       with:
         languages: go
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@959cbb7472c4d4ad70cdfe6f4976053fe48ab394
+      uses: github/codeql-action/analyze@d186a2a36cc67bfa1b860e6170d37fb9634742c7

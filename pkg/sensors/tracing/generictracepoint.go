@@ -78,6 +78,9 @@ type genericTracepoint struct {
 	actionArgs idtable.Table
 
 	pinPathPrefix string
+
+	// policyName is the name of the policy that this tracepoint belongs to
+	policyName string
 }
 
 // genericTracepointArg is the internal representation of an output value of a
@@ -293,7 +296,12 @@ func buildGenericTracepointArgs(info *tracepoint.Tracepoint, specArgs []v1alpha1
 
 // createGenericTracepoint creates the genericTracepoint information based on
 // the user-provided configuration
-func createGenericTracepoint(sensorName string, conf *GenericTracepointConf, policyID policyfilter.PolicyID) (*genericTracepoint, error) {
+func createGenericTracepoint(
+	sensorName string,
+	conf *GenericTracepointConf,
+	policyID policyfilter.PolicyID,
+	policyName string,
+) (*genericTracepoint, error) {
 	tp := tracepoint.Tracepoint{
 		Subsys: conf.Subsystem,
 		Event:  conf.Event,
@@ -309,10 +317,11 @@ func createGenericTracepoint(sensorName string, conf *GenericTracepointConf, pol
 	}
 
 	ret := &genericTracepoint{
-		Info:     &tp,
-		Spec:     conf,
-		args:     tpArgs,
-		policyID: policyID,
+		Info:       &tp,
+		Spec:       conf,
+		args:       tpArgs,
+		policyID:   policyID,
+		policyName: policyName,
 	}
 
 	genericTracepointTable.addTracepoint(ret)
@@ -321,11 +330,16 @@ func createGenericTracepoint(sensorName string, conf *GenericTracepointConf, pol
 }
 
 // createGenericTracepointSensor will create a sensor that can be loaded based on a generic tracepoint configuration
-func createGenericTracepointSensor(name string, confs []GenericTracepointConf, policyID policyfilter.PolicyID) (*sensors.Sensor, error) {
+func createGenericTracepointSensor(
+	name string,
+	confs []GenericTracepointConf,
+	policyID policyfilter.PolicyID,
+	policyName string,
+) (*sensors.Sensor, error) {
 
 	tracepoints := make([]*genericTracepoint, 0, len(confs))
 	for i := range confs {
-		tp, err := createGenericTracepoint(name, &confs[i], policyID)
+		tp, err := createGenericTracepoint(name, &confs[i], policyID, policyName)
 		if err != nil {
 			return nil, err
 		}
@@ -448,8 +462,8 @@ func (tp *genericTracepoint) EventConfig() (api.EventConfig, error) {
 		config.ArgM[i] = uint32(0)
 	}
 
-	if selectors.MatchActionSigKill(tp.Spec) {
-		config.Sigkill = 1
+	if selectors.HasEarlyBinaryFilter(tp.Spec.Selectors) {
+		config.Flags |= flagsEarlyFilter
 	}
 
 	return config, nil
@@ -504,7 +518,7 @@ func ReloadGenericTracepointSelectors(p *program.Program, conf *v1alpha1.Tracepo
 	return nil
 }
 
-func LoadGenericTracepointSensor(bpfDir, mapDir string, load *program.Program, version, verbose int) error {
+func LoadGenericTracepointSensor(bpfDir string, load *program.Program, version, verbose int) error {
 
 	tracepointLog = logger.GetLogger()
 
@@ -539,13 +553,14 @@ func LoadGenericTracepointSensor(bpfDir, mapDir string, load *program.Program, v
 	}
 	load.MapLoad = append(load.MapLoad, cfg)
 
-	if err := program.LoadTracepointProgram(bpfDir, mapDir, load, verbose); err == nil {
-		logger.GetLogger().Infof("Loaded generic tracepoint program: %s -> %s", load.Name, load.Attach)
+	if err := program.LoadTracepointProgram(bpfDir, load, verbose); err == nil {
+		logger.GetLogger().WithField("flags", flagsString(config.Flags)).
+			Infof("Loaded generic tracepoint program: %s -> %s", load.Name, load.Attach)
 	} else {
 		return err
 	}
 
-	m, err := ebpf.LoadPinnedMap(filepath.Join(mapDir, base.NamesMap.Name), nil)
+	m, err := ebpf.LoadPinnedMap(filepath.Join(bpfDir, base.NamesMap.Name), nil)
 	if err != nil {
 		return err
 	}
@@ -599,6 +614,7 @@ func handleGenericTracepoint(r *bytes.Reader) ([]observer.Event, error) {
 
 	unix.Subsys = tp.Info.Subsys
 	unix.Event = tp.Info.Event
+	unix.PolicyName = tp.policyName
 
 	for idx, out := range tp.args {
 
@@ -671,5 +687,5 @@ func handleGenericTracepoint(r *bytes.Reader) ([]observer.Event, error) {
 }
 
 func (t *observerTracepointSensor) LoadProbe(args sensors.LoadProbeArgs) error {
-	return LoadGenericTracepointSensor(args.BPFDir, args.MapDir, args.Load, args.Version, args.Verbose)
+	return LoadGenericTracepointSensor(args.BPFDir, args.Load, args.Version, args.Verbose)
 }

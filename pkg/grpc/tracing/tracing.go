@@ -3,6 +3,8 @@
 package tracing
 
 import (
+	"fmt"
+
 	"github.com/cilium/tetragon/api/v1/tetragon"
 	"github.com/cilium/tetragon/pkg/api/processapi"
 	"github.com/cilium/tetragon/pkg/api/tracingapi"
@@ -18,6 +20,7 @@ import (
 	"github.com/cilium/tetragon/pkg/reader/node"
 	"github.com/cilium/tetragon/pkg/reader/notify"
 	"github.com/cilium/tetragon/pkg/reader/path"
+	"github.com/cilium/tetragon/pkg/tracingpolicy"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -43,6 +46,10 @@ func kprobeAction(act uint64) tetragon.KprobeAction {
 		return tetragon.KprobeAction_KPROBE_ACTION_GETURL
 	case tracingapi.ActionLookupDns:
 		return tetragon.KprobeAction_KPROBE_ACTION_DNSLOOKUP
+	case tracingapi.ActionNoPost:
+		return tetragon.KprobeAction_KPROBE_ACTION_NOPOST
+	case tracingapi.ActionSignal:
+		return tetragon.KprobeAction_KPROBE_ACTION_SIGNAL
 	default:
 		return tetragon.KprobeAction_KPROBE_ACTION_UNKNOWN
 	}
@@ -224,6 +231,7 @@ type MsgGenericTracepointUnix struct {
 	Subsys     string
 	Event      string
 	Args       []tracingapi.MsgGenericTracepointArg
+	PolicyName string
 }
 
 func (msg *MsgGenericTracepointUnix) Notify() bool {
@@ -314,6 +322,13 @@ func (msg *MsgGenericTracepointUnix) Cast(o interface{}) notify.Message {
 	return &t
 }
 
+func (msg *MsgGenericTracepointUnix) PolicyInfo() tracingpolicy.PolicyInfo {
+	return tracingpolicy.PolicyInfo{
+		Name: msg.PolicyName,
+		Hook: fmt.Sprintf("tracepoint:%s/%s", msg.Subsys, msg.Event),
+	}
+}
+
 type MsgGenericKprobeUnix struct {
 	Common       processapi.MsgCommon
 	ProcessKey   processapi.MsgExecveKey
@@ -323,6 +338,7 @@ type MsgGenericKprobeUnix struct {
 	Action       uint64
 	FuncName     string
 	Args         []tracingapi.MsgGenericKprobeArg
+	PolicyName   string
 }
 
 func (msg *MsgGenericKprobeUnix) Notify() bool {
@@ -352,6 +368,13 @@ func (msg *MsgGenericKprobeUnix) HandleMessage() *tetragon.GetEventsResponse {
 func (msg *MsgGenericKprobeUnix) Cast(o interface{}) notify.Message {
 	t := o.(MsgGenericKprobeUnix)
 	return &t
+}
+
+func (msg *MsgGenericKprobeUnix) PolicyInfo() tracingpolicy.PolicyInfo {
+	return tracingpolicy.PolicyInfo{
+		Name: msg.PolicyName,
+		Hook: fmt.Sprintf("kprobe:%s", msg.FuncName),
+	}
 }
 
 type MsgProcessLoaderUnix struct {
@@ -440,10 +463,18 @@ type MsgGenericUprobeUnix struct {
 	ProcessKey processapi.MsgExecveKey
 	Path       string
 	Symbol     string
+	PolicyName string
 }
 
 func (msg *MsgGenericUprobeUnix) Notify() bool {
 	return true
+}
+
+func (msg *MsgGenericUprobeUnix) PolicyInfo() tracingpolicy.PolicyInfo {
+	return tracingpolicy.PolicyInfo{
+		Name: msg.PolicyName,
+		Hook: fmt.Sprintf("uprobe:%s/%s", msg.Path, msg.Symbol),
+	}
 }
 
 func (msg *MsgGenericUprobeUnix) RetryInternal(ev notify.Event, timestamp uint64) (*process.ProcessInternal, error) {

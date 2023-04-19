@@ -242,7 +242,7 @@ type ArgSelector struct {
 }
 
 type ActionSelector struct {
-	// +kubebuilder:validation:Enum=Post;FollowFD;UnfollowFD;Sigkill;CopyFD;Override;GetUrl;DnsLookup
+	// +kubebuilder:validation:Enum=Post;FollowFD;UnfollowFD;Sigkill;CopyFD;Override;GetUrl;DnsLookup;NoPost
 	// Action to execute.
 	Action string `json:"action"`
 	// +kubebuilder:validation:Optional
@@ -260,6 +260,9 @@ type ActionSelector struct {
 	// +kubebuilder:validation:Optional
 	// error value for override action
 	ArgError int32 `json:"argError"`
+	// +kubebuilder:validation:Optional
+	// A signal number for signal action
+	ArgSig uint32 `json:"argSig"`
 }
 
 type TracepointSpec struct {

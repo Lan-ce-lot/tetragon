@@ -114,6 +114,9 @@ type genericKprobe struct {
 	actionArgs idtable.Table
 
 	pinPathPrefix string
+
+	// policyName is the name of the policy that this tracepoint belongs to
+	policyName string
 }
 
 // pendingEvent is an event waiting to be merged with another event.
@@ -199,13 +202,12 @@ func createMultiKprobeSensor(sensorPath string, multiIDs, multiRetIDs []idtable.
 
 	load := program.Builder(
 		path.Join(option.Config.HubbleLib, loadProgName),
-		"",
+		fmt.Sprintf("%d functions", len(multiIDs)),
 		"kprobe.multi/generic_kprobe",
 		pinPath,
 		"generic_kprobe").
 		SetLoaderData(multiIDs)
 	progs = append(progs, load)
-	logger.GetLogger().Infof("Added multi kprobe sensor: %s (%d functions)", load.Name, len(multiIDs))
 
 	fdinstall := program.MapBuilderPin("fdinstall_map", sensors.PathJoin(sensorPath, "fdinstall_map"), load)
 	maps = append(maps, fdinstall)
@@ -231,29 +233,108 @@ func createMultiKprobeSensor(sensorPath string, multiIDs, multiRetIDs []idtable.
 	selNamesMap := program.MapBuilderPin("sel_names_map", sensors.PathJoin(pinPath, "sel_names_map"), load)
 	maps = append(maps, selNamesMap)
 
+	filterMap.SetMaxEntries(len(multiIDs))
+	configMap.SetMaxEntries(len(multiIDs))
+
 	if len(multiRetIDs) != 0 {
 		loadret := program.Builder(
 			path.Join(option.Config.HubbleLib, loadProgRetName),
-			"",
+			fmt.Sprintf("%d retkprobes", len(multiIDs)),
 			"kprobe.multi/generic_retkprobe",
 			"multi_retkprobe",
 			"generic_kprobe").
 			SetRetProbe(true).
 			SetLoaderData(multiRetIDs)
 		progs = append(progs, loadret)
-		logger.GetLogger().Infof("Added multi retkprobe sensor: %s (%d functions)", loadret.Name, len(multiRetIDs))
 
 		retProbe := program.MapBuilderPin("retprobe_map", sensors.PathJoin(pinPath, "retprobe_map"), loadret)
 		maps = append(maps, retProbe)
 
 		retConfigMap := program.MapBuilderPin("config_map", sensors.PathJoin(pinPath, "retprobe_config_map"), loadret)
 		maps = append(maps, retConfigMap)
+
+		retConfigMap.SetMaxEntries(len(multiRetIDs))
 	}
 
 	return progs, maps
 }
 
-func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, policyID policyfilter.PolicyID) (*sensors.Sensor, error) {
+// preValidateKprobes pre-validates the semantics and BTF information of a Kprobe spec
+//
+// Pre validate the kprobe semantics and BTF information in order to separate
+// the kprobe errors from BPF related ones.
+func preValidateKprobes(name string, kprobes []v1alpha1.KProbeSpec) error {
+	for i := range kprobes {
+		f := &kprobes[i]
+
+		hasOverride := selectors.HasOverride(f)
+		if hasOverride && !bpf.HasOverrideHelper() {
+			return fmt.Errorf("Error override action not supported, bpf_override_return helper not available")
+		}
+
+		// modifying f.Call directly since BTF validation
+		// later will use v1alpha1.KProbeSpec object
+		if f.Syscall {
+			prefixedName, err := arch.AddSyscallPrefix(f.Call)
+			if err != nil {
+				logger.GetLogger().WithFields(logrus.Fields{
+					"sensor": name,
+				}).WithError(err).Warn("Kprobe spec pre-validation of syscall prefix failed")
+			} else {
+				f.Call = prefixedName
+			}
+		} else if hasOverride {
+			return fmt.Errorf("Error override action can be used only with syscalls")
+		}
+
+		// Now go over BTF validation
+		btfobj, err := btf.NewBTF()
+		if err != nil {
+			return err
+		}
+
+		if err := btf.ValidateKprobeSpec(btfobj, f); err != nil {
+			if warn, ok := err.(*btf.ValidationWarn); ok {
+				logger.GetLogger().WithFields(logrus.Fields{
+					"sensor": name,
+				}).WithError(warn).Warn("Kprobe spec pre-validation failed, but will continue with loading")
+			} else if e, ok := err.(*btf.ValidationFailed); ok {
+				return fmt.Errorf("kprobe spec pre-validation failed: %w", e)
+			} else {
+				err = fmt.Errorf("invalid or old kprobe spec: %s", err)
+				logger.GetLogger().WithFields(logrus.Fields{
+					"sensor": name,
+				}).WithError(err).Warn("Kprobe spec pre-validation failed, but will continue with loading")
+			}
+		} else {
+			logger.GetLogger().WithFields(logrus.Fields{
+				"sensor": name,
+			}).Debug("Kprobe spec pre-validation succeeded")
+		}
+	}
+
+	return nil
+}
+
+const (
+	flagsEarlyFilter = 1 << 0
+)
+
+func flagsString(flags uint32) string {
+	s := "none"
+
+	if flags&flagsEarlyFilter != 0 {
+		s = "early_filter"
+	}
+	return s
+}
+
+func createGenericKprobeSensor(
+	name string,
+	kprobes []v1alpha1.KProbeSpec,
+	policyID policyfilter.PolicyID,
+	policyName string,
+) (*sensors.Sensor, error) {
 	var progs []*program.Program
 	var maps []*program.Map
 	var multiIDs, multiRetIDs []idtable.EntryID
@@ -268,13 +349,14 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 	// - multiple kprobes are defined
 	useMulti = !option.Config.DisableKprobeMulti &&
 		bpf.HasKprobeMulti() &&
-		len(kprobes) > 1 && len(kprobes) < MaxKprobesMulti
+		len(kprobes) > 1
 
 	for i := range kprobes {
 		f := &kprobes[i]
+		var err error
 		var argSigPrinters []argPrinters
 		var argReturnPrinters []argPrinters
-		var setRetprobe, is_syscall bool
+		var setRetprobe bool
 		var argRetprobe *v1alpha1.KProbeArg
 		var argsBTFSet [api.MaxArgsSupported]bool
 
@@ -282,33 +364,7 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 		config.PolicyID = uint32(policyID)
 
 		argRetprobe = nil // holds pointer to arg for return handler
-
-		// modifying f.Call directly instead of writing to funcName
-		// because of BTF validation later using the whole v1alpha1.KProbeSpec object
-		if f.Syscall {
-			prefixedName, err := arch.AddSyscallPrefix(f.Call)
-			if err != nil {
-				logger.GetLogger().Warnf("kprobe syscall prefix: %w", err)
-			} else {
-				f.Call = prefixedName
-			}
-		}
 		funcName := f.Call
-
-		var err error
-		btfobj, err := btf.NewBTF()
-		if err != nil {
-			return nil, err
-		}
-		if err := btf.ValidateKprobeSpec(btfobj, f); err != nil {
-			if warn, ok := err.(*btf.ValidationWarn); ok {
-				logger.GetLogger().Warnf("kprobe spec validation: %s", warn)
-			} else if e, ok := err.(*btf.ValidationFailed); ok {
-				return nil, fmt.Errorf("kprobe spec validation failed: %w", e)
-			} else {
-				logger.GetLogger().Warnf("invalid or old kprobe spec: %s", err)
-			}
-		}
 
 		// Parse Arguments
 		for j, a := range f.Args {
@@ -385,11 +441,6 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 			}
 		}
 
-		hasOverride := selectors.HasOverride(f)
-		if hasOverride && !bpf.HasOverrideHelper() {
-			return nil, fmt.Errorf("Error override_return bpf helper not available")
-		}
-
 		// Copy over userspace return filters
 		var userReturnFilters []v1alpha1.ArgSelector
 		for _, s := range f.Selectors {
@@ -398,27 +449,21 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 			}
 		}
 
+		hasOverride := selectors.HasOverride(f)
+
 		// Write attributes into BTF ptr for use with load
-		is_syscall = f.Syscall
 		if !setRetprobe {
 			setRetprobe = f.Return
 		}
 
-		if is_syscall {
+		if f.Syscall {
 			config.Syscall = 1
 		} else {
 			config.Syscall = 0
-
-			if hasOverride {
-				return nil, fmt.Errorf("Error override action can be used only with syscalls")
-			}
 		}
 
-		has_sigkill := selectors.MatchActionSigKill(f)
-		if has_sigkill {
-			config.Sigkill = 1
-		} else {
-			config.Sigkill = 0
+		if selectors.HasEarlyBinaryFilter(f.Selectors) {
+			config.Flags |= flagsEarlyFilter
 		}
 
 		// create a new entry on the table, and pass its id to BPF-side
@@ -426,7 +471,7 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 		kprobeEntry := genericKprobe{
 			loadArgs: kprobeLoadArgs{
 				retprobe: setRetprobe,
-				syscall:  is_syscall,
+				syscall:  f.Syscall,
 				config:   config,
 			},
 			argSigPrinters:    argSigPrinters,
@@ -435,6 +480,7 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 			funcName:          funcName,
 			pendingEvents:     nil,
 			tableId:           idtable.UninitializedEntryID,
+			policyName:        policyName,
 		}
 
 		// Parse Filters into kernel filter logic
@@ -458,6 +504,10 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 				multiRetIDs = append(multiRetIDs, kprobeEntry.tableId)
 			}
 			multiIDs = append(multiIDs, kprobeEntry.tableId)
+			logger.GetLogger().
+				WithField("return", setRetprobe).
+				WithField("function", kprobeEntry.funcName).
+				Infof("Added multi kprobe")
 			continue
 		}
 
@@ -521,7 +571,8 @@ func createGenericKprobeSensor(name string, kprobes []v1alpha1.KProbeSpec, polic
 			program.MapBuilderPin("fdinstall_map", sensors.PathJoin(sensorPath, "fdinstall_map"), loadret)
 		}
 
-		logger.GetLogger().Infof("Added generic kprobe sensor: %s -> %s", load.Name, load.Attach)
+		logger.GetLogger().WithField("flags", flagsString(config.Flags)).
+			Infof("Added generic kprobe sensor: %s -> %s", load.Name, load.Attach)
 	}
 
 	if len(multiIDs) != 0 {
@@ -576,7 +627,7 @@ func ReloadGenericKprobeSelectors(kpSensor *sensors.Sensor, conf *v1alpha1.KProb
 	return nil
 }
 
-func loadSingleKprobeSensor(id idtable.EntryID, bpfDir, mapDir string, load *program.Program, version, verbose int) error {
+func loadSingleKprobeSensor(id idtable.EntryID, bpfDir string, load *program.Program, version, verbose int) error {
 	gk, err := genericKprobeTableGet(id)
 	if err != nil {
 		return err
@@ -599,13 +650,13 @@ func loadSingleKprobeSensor(id idtable.EntryID, bpfDir, mapDir string, load *pro
 
 	sensors.AllPrograms = append(sensors.AllPrograms, load)
 
-	if err := program.LoadKprobeProgram(bpfDir, mapDir, load, verbose); err == nil {
+	if err := program.LoadKprobeProgram(bpfDir, load, verbose); err == nil {
 		logger.GetLogger().Infof("Loaded generic kprobe program: %s -> %s", load.Name, load.Attach)
 	} else {
 		return err
 	}
 
-	m, err := ebpf.LoadPinnedMap(filepath.Join(mapDir, base.NamesMap.Name), nil)
+	m, err := ebpf.LoadPinnedMap(filepath.Join(bpfDir, base.NamesMap.Name), nil)
 	if err != nil {
 		return err
 	}
@@ -618,7 +669,7 @@ func loadSingleKprobeSensor(id idtable.EntryID, bpfDir, mapDir string, load *pro
 	return err
 }
 
-func loadMultiKprobeSensor(ids []idtable.EntryID, bpfDir, mapDir string, load *program.Program, version, verbose int) error {
+func loadMultiKprobeSensor(ids []idtable.EntryID, bpfDir string, load *program.Program, version, verbose int) error {
 	sensors.AllPrograms = append(sensors.AllPrograms, load)
 
 	bin_buf := make([]bytes.Buffer, len(ids))
@@ -651,13 +702,13 @@ func loadMultiKprobeSensor(ids []idtable.EntryID, bpfDir, mapDir string, load *p
 
 	load.SetAttachData(data)
 
-	if err := program.LoadMultiKprobeProgram(bpfDir, mapDir, load, verbose); err == nil {
+	if err := program.LoadMultiKprobeProgram(bpfDir, load, verbose); err == nil {
 		logger.GetLogger().Infof("Loaded generic kprobe sensor: %s -> %s", load.Name, load.Attach)
 	} else {
 		return err
 	}
 
-	m, err := ebpf.LoadPinnedMap(filepath.Join(mapDir, base.NamesMap.Name), nil)
+	m, err := ebpf.LoadPinnedMap(filepath.Join(bpfDir, base.NamesMap.Name), nil)
 	if err != nil {
 		return err
 	}
@@ -674,12 +725,12 @@ func loadMultiKprobeSensor(ids []idtable.EntryID, bpfDir, mapDir string, load *p
 	return err
 }
 
-func loadGenericKprobeSensor(bpfDir, mapDir string, load *program.Program, version, verbose int) error {
+func loadGenericKprobeSensor(bpfDir string, load *program.Program, version, verbose int) error {
 	if id, ok := load.LoaderData.(idtable.EntryID); ok {
-		return loadSingleKprobeSensor(id, bpfDir, mapDir, load, version, verbose)
+		return loadSingleKprobeSensor(id, bpfDir, load, version, verbose)
 	}
 	if ids, ok := load.LoaderData.([]idtable.EntryID); ok {
-		return loadMultiKprobeSensor(ids, bpfDir, mapDir, load, version, verbose)
+		return loadMultiKprobeSensor(ids, bpfDir, load, version, verbose)
 	}
 	return fmt.Errorf("invalid loadData type: expecting idtable.EntryID/[] and got: %T (%v)",
 		load.LoaderData, load.LoaderData)
@@ -806,6 +857,7 @@ func handleGenericKprobe(r *bytes.Reader) ([]observer.Event, error) {
 	unix.FuncName = gk.funcName
 	unix.Namespaces = m.Namespaces
 	unix.Capabilities = m.Capabilities
+	unix.PolicyName = gk.policyName
 
 	returnEvent := m.Common.Flags > 0
 
@@ -1205,5 +1257,5 @@ func retprobeMerge(prev pendingEvent, curr pendingEvent) (*tracing.MsgGenericKpr
 }
 
 func (k *observerKprobeSensor) LoadProbe(args sensors.LoadProbeArgs) error {
-	return loadGenericKprobeSensor(args.BPFDir, args.MapDir, args.Load, args.Version, args.Verbose)
+	return loadGenericKprobeSensor(args.BPFDir, args.Load, args.Version, args.Verbose)
 }

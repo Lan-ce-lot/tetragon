@@ -21,6 +21,7 @@ import (
 	lc "github.com/cilium/tetragon/pkg/matchers/listmatcher"
 	smatcher "github.com/cilium/tetragon/pkg/matchers/stringmatcher"
 	"github.com/cilium/tetragon/pkg/observer"
+	"github.com/cilium/tetragon/pkg/policyfilter"
 	"github.com/cilium/tetragon/pkg/sensors"
 	testsensor "github.com/cilium/tetragon/pkg/sensors/test"
 	tus "github.com/cilium/tetragon/pkg/testutils/sensors"
@@ -66,7 +67,7 @@ func TestGenericTracepointSimple(t *testing.T) {
 
 	sm := tus.StartTestSensorManager(ctx, t)
 	// create and add sensor
-	sensor, err := createGenericTracepointSensor("GtpLseekTest", []GenericTracepointConf{lseekConf}, 0)
+	sensor, err := createGenericTracepointSensor("GtpLseekTest", []GenericTracepointConf{lseekConf}, policyfilter.NoFilterID, "policyName")
 	if err != nil {
 		t.Fatalf("failed to create generic tracepoint sensor: %s", err)
 	}
@@ -125,7 +126,7 @@ func doTestGenericTracepointPidFilter(t *testing.T, conf GenericTracepointConf, 
 
 	sm := tus.StartTestSensorManager(ctx, t)
 	// create and add sensor
-	sensor, err := createGenericTracepointSensor("GtpLseekTest", []GenericTracepointConf{conf}, 0)
+	sensor, err := createGenericTracepointSensor("GtpLseekTest", []GenericTracepointConf{conf}, policyfilter.NoFilterID, "policyName")
 	if err != nil {
 		t.Fatalf("failed to create generic tracepoint sensor: %s", err)
 	}
@@ -417,12 +418,16 @@ func TestLoadTracepointSensor(t *testing.T) {
 		9:  tus.SensorProg{Name: "generic_tracepoint_event3", Type: ebpf.TracePoint},
 		10: tus.SensorProg{Name: "generic_tracepoint_event4", Type: ebpf.TracePoint},
 		11: tus.SensorProg{Name: "generic_tracepoint_filter", Type: ebpf.TracePoint},
+		12: tus.SensorProg{Name: "generic_tracepoint_actions", Type: ebpf.TracePoint},
+		13: tus.SensorProg{Name: "generic_tracepoint_output", Type: ebpf.TracePoint},
 	}
 
 	var sensorMaps = []tus.SensorMap{
 		// all programs
-		tus.SensorMap{Name: "tp_heap", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
-		tus.SensorMap{Name: "tp_calls", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
+		tus.SensorMap{Name: "tp_heap", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}},
+
+		// all but generic_tracepoint_output
+		tus.SensorMap{Name: "tp_calls", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
 
 		// only generic_tracepoint_event*
 		tus.SensorMap{Name: "buffer_heap_map", Progs: []uint{6, 7, 8, 9, 10}},
@@ -430,19 +435,19 @@ func TestLoadTracepointSensor(t *testing.T) {
 		// all but generic_tracepoint_event,generic_tracepoint_filter
 		tus.SensorMap{Name: "retprobe_map", Progs: []uint{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
 
-		// generic_tracepoint_arg**,base
-		tus.SensorMap{Name: "tcpmon_map", Progs: []uint{1, 2, 3, 4, 5}},
+		// generic_tracepoint_output
+		tus.SensorMap{Name: "tcpmon_map", Progs: []uint{13}},
 
-		// shared with base sensor
-		tus.SensorMap{Name: "execve_map", Progs: []uint{0, 1, 2, 3, 4, 5, 11}},
+		// all kprobe but generic_tracepoint_filter
+		tus.SensorMap{Name: "config_map", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
 	}
 
 	if kernels.EnableLargeProgs() {
-		// all kprobe but generic_kprobe_process_filter,generic_kprobe_event
-		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "config_map", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}})
+		// shared with base sensor
+		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "execve_map", Progs: []uint{0, 1, 2, 3, 4, 5, 11, 13}})
 	} else {
-		// all kprobe but generic_kprobe_process_filter,generic_kprobe_event
-		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "config_map", Progs: []uint{0, 6, 7, 8, 9, 10}})
+		// shared with base sensor
+		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "execve_map", Progs: []uint{0, 1, 2, 3, 4, 5, 11}})
 	}
 
 	readHook := `

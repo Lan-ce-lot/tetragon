@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -95,7 +96,7 @@ spec:
 		t.Fatalf("GetDefaultObserverWithFile error: %s", err)
 	}
 	initialSensor := base.GetInitialSensor()
-	initialSensor.Load(ctx, bpf.MapPrefixPath(), bpf.MapPrefixPath(), "")
+	initialSensor.Load(ctx, bpf.MapPrefixPath(), "")
 }
 
 // NB: This is similar to TestKprobeObjectWriteRead, but it's a bit easier to
@@ -1588,7 +1589,7 @@ spec:
 // override
 
 func runKprobeOverride(t *testing.T, hook string, checker ec.MultiEventChecker,
-	testFile string, testErr error) {
+	testFile string, testErr error, nopost bool) {
 	var doneWG, readyWG sync.WaitGroup
 	defer doneWG.Wait()
 
@@ -1626,7 +1627,12 @@ func runKprobeOverride(t *testing.T, hook string, checker ec.MultiEventChecker,
 	}
 
 	err = jsonchecker.JsonTestCheck(t, checker)
-	assert.NoError(t, err)
+
+	if nopost {
+		assert.Error(t, err)
+	} else {
+		assert.NoError(t, err)
+	}
 }
 
 func TestKprobeOverride(t *testing.T) {
@@ -1685,7 +1691,67 @@ spec:
 		WithAction(tetragon.KprobeAction_KPROBE_ACTION_OVERRIDE)
 	checker := ec.NewUnorderedEventChecker(kpChecker)
 
-	runKprobeOverride(t, openAtHook, checker, file.Name(), syscall.ENOENT)
+	runKprobeOverride(t, openAtHook, checker, file.Name(), syscall.ENOENT, false)
+}
+
+func TestKprobeOverrideNopostAction(t *testing.T) {
+	pidStr := strconv.Itoa(int(observer.GetMyPid()))
+
+	file, err := os.CreateTemp(t.TempDir(), "kprobe-override-")
+	if err != nil {
+		t.Fatalf("writeFile(%s): err %s", testConfigFile, err)
+	}
+	defer assert.NoError(t, file.Close())
+
+	openAtHook := `
+apiVersion: cilium.io/v1alpha1
+metadata:
+  name: "sys-openat-override"
+spec:
+  kprobes:
+  - call: "sys_openat"
+    return: true
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "string"
+    - index: 2
+      type: "int"
+    returnArg:
+      type: "int"
+    selectors:
+    - matchPIDs:
+      - operator: In
+        followForks: true
+        values:
+        - ` + pidStr + `
+      matchArgs:
+      - index: 1
+        operator: "Equal"
+        values:
+        - "` + file.Name() + `\0"
+      matchActions:
+      - action: Override
+        argError: -2
+      - action: NoPost
+`
+
+	kpChecker := ec.NewProcessKprobeChecker("").
+		WithFunctionName(sm.Full(arch.AddSyscallPrefixTestHelper(t, "sys_openat"))).
+		WithArgs(ec.NewKprobeArgumentListMatcher().
+			WithOperator(lc.Ordered).
+			WithValues(
+				ec.NewKprobeArgumentChecker(),
+				ec.NewKprobeArgumentChecker().WithStringArg(sm.Contains(file.Name())),
+				ec.NewKprobeArgumentChecker(),
+			)).
+		WithReturn(ec.NewKprobeArgumentChecker().WithIntArg(-2)).
+		WithAction(tetragon.KprobeAction_KPROBE_ACTION_OVERRIDE)
+	checker := ec.NewUnorderedEventChecker(kpChecker)
+
+	runKprobeOverride(t, openAtHook, checker, file.Name(), syscall.ENOENT, true)
 }
 
 func TestKprobeOverrideNonSyscall(t *testing.T) {
@@ -1717,6 +1783,255 @@ spec:
 		t.Fatalf("GetDefaultObserverWithFileNoTest ok, should fail\n")
 	}
 	assert.Error(t, err)
+}
+
+func runKprobeOverrideSignal(t *testing.T, hook string, checker ec.MultiEventChecker,
+	testFile string, testErr error, nopost bool, expectedSig syscall.Signal) {
+	var doneWG, readyWG sync.WaitGroup
+	defer doneWG.Wait()
+
+	if !bpf.HasOverrideHelper() {
+		t.Skip("skipping override test, bpf_override_return helper not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), tus.Conf().CmdWaitTime)
+	defer cancel()
+
+	configHook := []byte(hook)
+	err := os.WriteFile(testConfigFile, configHook, 0644)
+	if err != nil {
+		t.Fatalf("writeFile(%s): err %s", testConfigFile, err)
+	}
+
+	obs, err := observer.GetDefaultObserverWithFile(t, ctx, testConfigFile, tus.Conf().TetragonLib)
+	if err != nil {
+		t.Fatalf("GetDefaultObserverWithFile error: %s", err)
+	}
+	observer.LoopEvents(ctx, t, &doneWG, &readyWG, obs)
+	readyWG.Wait()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, expectedSig)
+
+	fd, err := syscall.Open(testFile, syscall.O_RDWR, 0x777)
+	if fd >= 0 {
+		t.Logf("syscall.Open succeeded\n")
+		syscall.Close(fd)
+		t.Fatal()
+	}
+
+	if !errors.Is(err, testErr) {
+		t.Logf("syscall.Open succeeded\n")
+		syscall.Close(fd)
+		t.Fatal()
+	}
+
+	sig := <-sigs
+
+	if sig != expectedSig {
+		t.Fatalf("got wrong signal number %d, expocted %d", sig, expectedSig)
+	}
+
+	err = jsonchecker.JsonTestCheck(t, checker)
+
+	if nopost {
+		assert.Error(t, err)
+	} else {
+		assert.NoError(t, err)
+	}
+}
+
+func TestKprobeOverrideSignal(t *testing.T) {
+	if !kernels.EnableLargeProgs() {
+		t.Skip()
+	}
+	pidStr := strconv.Itoa(int(observer.GetMyPid()))
+
+	file, err := os.CreateTemp(t.TempDir(), "kprobe-override-")
+	if err != nil {
+		t.Fatalf("writeFile(%s): err %s", testConfigFile, err)
+	}
+	defer assert.NoError(t, file.Close())
+
+	openAtHook := `
+apiVersion: cilium.io/v1alpha1
+metadata:
+  name: "sys-openat-override-signal"
+spec:
+  kprobes:
+  - call: "sys_openat"
+    return: true
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "string"
+    - index: 2
+      type: "int"
+    returnArg:
+      type: "int"
+    selectors:
+    - matchPIDs:
+      - operator: In
+        followForks: true
+        values:
+        - ` + pidStr + `
+      matchArgs:
+      - index: 1
+        operator: "Equal"
+        values:
+        - "` + file.Name() + `\0"
+      matchActions:
+      - action: Override
+        argError: -2
+      - action: Signal
+        argSig: 10
+`
+
+	kpChecker := ec.NewProcessKprobeChecker("").
+		WithFunctionName(sm.Full(arch.AddSyscallPrefixTestHelper(t, "sys_openat"))).
+		WithArgs(ec.NewKprobeArgumentListMatcher().
+			WithOperator(lc.Ordered).
+			WithValues(
+				ec.NewKprobeArgumentChecker(),
+				ec.NewKprobeArgumentChecker().WithStringArg(sm.Contains(file.Name())),
+				ec.NewKprobeArgumentChecker(),
+			)).
+		WithReturn(ec.NewKprobeArgumentChecker().WithIntArg(-2)).
+		WithAction(tetragon.KprobeAction_KPROBE_ACTION_SIGNAL)
+	checker := ec.NewUnorderedEventChecker(kpChecker)
+
+	runKprobeOverrideSignal(t, openAtHook, checker, file.Name(), syscall.ENOENT, false, syscall.SIGUSR1)
+}
+
+func TestKprobeSignalOverride(t *testing.T) {
+	if !kernels.EnableLargeProgs() {
+		t.Skip()
+	}
+	pidStr := strconv.Itoa(int(observer.GetMyPid()))
+
+	file, err := os.CreateTemp(t.TempDir(), "kprobe-override-")
+	if err != nil {
+		t.Fatalf("writeFile(%s): err %s", testConfigFile, err)
+	}
+	defer assert.NoError(t, file.Close())
+
+	openAtHook := `
+apiVersion: cilium.io/v1alpha1
+metadata:
+  name: "sys-openat-signal-override"
+spec:
+  kprobes:
+  - call: "sys_openat"
+    return: true
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "string"
+    - index: 2
+      type: "int"
+    returnArg:
+      type: "int"
+    selectors:
+    - matchPIDs:
+      - operator: In
+        followForks: true
+        values:
+        - ` + pidStr + `
+      matchArgs:
+      - index: 1
+        operator: "Equal"
+        values:
+        - "` + file.Name() + `\0"
+      matchActions:
+      - action: Signal
+        argSig: 12
+      - action: Override
+        argError: -2
+`
+
+	kpChecker := ec.NewProcessKprobeChecker("").
+		WithFunctionName(sm.Full(arch.AddSyscallPrefixTestHelper(t, "sys_openat"))).
+		WithArgs(ec.NewKprobeArgumentListMatcher().
+			WithOperator(lc.Ordered).
+			WithValues(
+				ec.NewKprobeArgumentChecker(),
+				ec.NewKprobeArgumentChecker().WithStringArg(sm.Contains(file.Name())),
+				ec.NewKprobeArgumentChecker(),
+			)).
+		WithReturn(ec.NewKprobeArgumentChecker().WithIntArg(-2)).
+		WithAction(tetragon.KprobeAction_KPROBE_ACTION_OVERRIDE)
+	checker := ec.NewUnorderedEventChecker(kpChecker)
+
+	runKprobeOverrideSignal(t, openAtHook, checker, file.Name(), syscall.ENOENT, false, syscall.SIGUSR2)
+}
+
+func TestKprobeSignalOverrideNopost(t *testing.T) {
+	if !kernels.EnableLargeProgs() {
+		t.Skip()
+	}
+	pidStr := strconv.Itoa(int(observer.GetMyPid()))
+
+	file, err := os.CreateTemp(t.TempDir(), "kprobe-override-")
+	if err != nil {
+		t.Fatalf("writeFile(%s): err %s", testConfigFile, err)
+	}
+	defer assert.NoError(t, file.Close())
+
+	openAtHook := `
+apiVersion: cilium.io/v1alpha1
+metadata:
+  name: "sys-openat-signal-override"
+spec:
+  kprobes:
+  - call: "sys_openat"
+    return: true
+    syscall: true
+    args:
+    - index: 0
+      type: int
+    - index: 1
+      type: "string"
+    - index: 2
+      type: "int"
+    returnArg:
+      type: "int"
+    selectors:
+    - matchPIDs:
+      - operator: In
+        followForks: true
+        values:
+        - ` + pidStr + `
+      matchArgs:
+      - index: 1
+        operator: "Equal"
+        values:
+        - "` + file.Name() + `\0"
+      matchActions:
+      - action: Signal
+        argSig: 10
+      - action: Override
+        argError: -2
+      - action: NoPost
+`
+
+	kpChecker := ec.NewProcessKprobeChecker("").
+		WithFunctionName(sm.Full(arch.AddSyscallPrefixTestHelper(t, "sys_openat"))).
+		WithArgs(ec.NewKprobeArgumentListMatcher().
+			WithOperator(lc.Ordered).
+			WithValues(
+				ec.NewKprobeArgumentChecker(),
+				ec.NewKprobeArgumentChecker().WithStringArg(sm.Contains(file.Name())),
+				ec.NewKprobeArgumentChecker(),
+			)).
+		WithReturn(ec.NewKprobeArgumentChecker().WithIntArg(-2)).
+		WithAction(tetragon.KprobeAction_KPROBE_ACTION_OVERRIDE)
+	checker := ec.NewUnorderedEventChecker(kpChecker)
+
+	runKprobeOverrideSignal(t, openAtHook, checker, file.Name(), syscall.ENOENT, true, syscall.SIGUSR1)
 }
 
 func runKprobe_char_iovec(t *testing.T, configHook string,
@@ -2414,7 +2729,7 @@ spec:
 `
 	ctx := context.Background()
 	b := base.GetInitialSensor()
-	if err := b.Load(ctx, option.Config.BpfDir, option.Config.MapDir, option.Config.CiliumDir); err != nil {
+	if err := b.Load(ctx, option.Config.BpfDir, option.Config.CiliumDir); err != nil {
 		return fmt.Errorf("load base sensor failed: %w", err)
 	}
 
@@ -2427,7 +2742,7 @@ spec:
 	if err != nil {
 		return err
 	}
-	return sens.Load(ctx, option.Config.BpfDir, option.Config.MapDir, option.Config.CiliumDir)
+	return sens.Load(ctx, option.Config.BpfDir, option.Config.CiliumDir)
 }
 
 func TestKprobeBpfAttr(t *testing.T) {
@@ -2494,43 +2809,44 @@ func TestLoadKprobeSensor(t *testing.T) {
 		9:  tus.SensorProg{Name: "generic_kprobe_filter_arg4", Type: ebpf.Kprobe},
 		10: tus.SensorProg{Name: "generic_kprobe_filter_arg5", Type: ebpf.Kprobe},
 		11: tus.SensorProg{Name: "generic_kprobe_process_filter", Type: ebpf.Kprobe},
+		12: tus.SensorProg{Name: "generic_kprobe_actions", Type: ebpf.Kprobe},
+		13: tus.SensorProg{Name: "generic_kprobe_output", Type: ebpf.Kprobe},
 		// retkprobe
-		12: tus.SensorProg{Name: "generic_retkprobe_event", Type: ebpf.Kprobe},
+		14: tus.SensorProg{Name: "generic_retkprobe_event", Type: ebpf.Kprobe},
 	}
 
 	var sensorMaps = []tus.SensorMap{
 		// all kprobe programs
-		tus.SensorMap{Name: "process_call_heap", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
-		tus.SensorMap{Name: "kprobe_calls", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
+		tus.SensorMap{Name: "process_call_heap", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}},
+		// all but generic_kprobe_output,generic_retkprobe_event
+		tus.SensorMap{Name: "kprobe_calls", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
 
 		// only retkprobe
-		tus.SensorMap{Name: "process_call_heap", Progs: []uint{12}},
+		tus.SensorMap{Name: "process_call_heap", Progs: []uint{14}},
 
-		// generic_kprobe_process_filter,generic_kprobe_filter_arg*
-		tus.SensorMap{Name: "filter_map", Progs: []uint{6, 7, 8, 9, 10, 11}},
+		// generic_kprobe_process_filter,generic_kprobe_filter_arg*,
+		// generic_kprobe_actions,generic_kprobe_output
+		tus.SensorMap{Name: "filter_map", Progs: []uint{6, 7, 8, 9, 10, 11, 12}},
 
-		// generic_kprobe_filter_arg*
-		tus.SensorMap{Name: "override_tasks", Progs: []uint{6, 7, 8, 9, 10}},
+		// generic_kprobe_actions
+		tus.SensorMap{Name: "override_tasks", Progs: []uint{12}},
 
-		// generic_kprobe_filter_arg*,generic_retkprobe_event,base
-		tus.SensorMap{Name: "tcpmon_map", Progs: []uint{6, 7, 8, 9, 10, 12}},
+		// generic_kprobe_output,generic_retkprobe_event
+		tus.SensorMap{Name: "tcpmon_map", Progs: []uint{13, 14}},
 
-		// only retkprobe
-		tus.SensorMap{Name: "config_map", Progs: []uint{12}},
+		// all kprobe but generic_kprobe_process_filter,generic_retkprobe_event
+		tus.SensorMap{Name: "config_map", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
 
-		// shared with base sensor
-		tus.SensorMap{Name: "execve_map", Progs: []uint{0, 6, 7, 8, 9, 10, 11, 12}},
-
-		// generic_kprobe_process_event*,generic_kprobe_filter_arg*,retkprobe
-		tus.SensorMap{Name: "fdinstall_map", Progs: []uint{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12}},
+		// generic_kprobe_process_event*,generic_kprobe_actions,retkprobe
+		tus.SensorMap{Name: "fdinstall_map", Progs: []uint{1, 2, 3, 4, 5, 12, 14}},
 	}
 
 	if kernels.EnableLargeProgs() {
-		// all kprobe but generic_kprobe_process_filter
-		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "config_map", Progs: []uint{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}})
+		// shared with base sensor
+		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "execve_map", Progs: []uint{0, 6, 7, 8, 9, 10, 11, 13, 14}})
 	} else {
-		// all kprobe but generic_kprobe_process_filter
-		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "config_map", Progs: []uint{0, 1, 2, 3, 4, 5}})
+		// shared with base sensor
+		sensorMaps = append(sensorMaps, tus.SensorMap{Name: "execve_map", Progs: []uint{0, 6, 7, 8, 9, 10, 11, 14}})
 	}
 
 	readHook := `
@@ -2570,4 +2886,32 @@ spec:
 	tus.CheckSensorLoad(sens, sensorMaps, sensorProgs, t)
 
 	sensors.UnloadAll(tus.Conf().TetragonLib)
+}
+
+func TestFakeSyscallError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), tus.Conf().CmdWaitTime)
+	defer cancel()
+
+	testHook := `apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+ name: "sys-fake"
+spec:
+ kprobes:
+ - call: "sys_fake"
+   syscall: true
+`
+
+	_, err := observer.GetDefaultObserverWithFile(t, ctx, "", tus.Conf().TetragonLib)
+	assert.NoError(t, err)
+
+	tp, err := yaml.PolicyFromYaml(testHook)
+	assert.NoError(t, err)
+	assert.NotNil(t, tp)
+
+	sens, err := sensors.GetMergedSensorFromParserPolicy(tp)
+	assert.Error(t, err)
+	assert.Nil(t, sens)
+
+	t.Logf("got error (as expected): %s", err)
 }

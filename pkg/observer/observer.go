@@ -291,10 +291,10 @@ func (k *Observer) Start(ctx context.Context) error {
 	return nil
 }
 
-// InitSensorManager starts the sensor controller and stt manager.
-func (k *Observer) InitSensorManager() error {
+// InitSensorManager starts the sensor controller
+func (k *Observer) InitSensorManager(waitChan chan struct{}) error {
 	var err error
-	SensorManager, err = sensors.StartSensorManager(option.Config.BpfDir, option.Config.MapDir, option.Config.CiliumDir)
+	SensorManager, err = sensors.StartSensorManager(option.Config.BpfDir, option.Config.CiliumDir, waitChan)
 	return err
 }
 
@@ -333,7 +333,10 @@ func (k *Observer) PrintStats() {
 	recvCntr := k.ReadReceivedEvents()
 	lostCntr := k.ReadLostEvents()
 	total := float64(recvCntr + lostCntr)
-	loss := (float64(lostCntr) * 100.0) / total
+	loss := float64(0)
+	if total > 0 {
+		loss = (float64(lostCntr) * 100.0) / total
+	}
 	k.log.Infof("BPF events statistics: %d received, %.2g%% events loss", recvCntr, loss)
 
 	k.log.WithFields(logrus.Fields{
@@ -346,7 +349,7 @@ func (k *Observer) PrintStats() {
 }
 
 func (k *Observer) RemovePrograms() {
-	RemovePrograms(option.Config.BpfDir, option.Config.MapDir)
+	RemovePrograms(option.Config.BpfDir)
 }
 
 // Log Active pinned BPF resources

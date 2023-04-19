@@ -25,6 +25,8 @@ const (
 	ActionTypeCopyFd     = 5
 	ActionTypeGetUrl     = 6
 	ActionTypeDnsLookup  = 7
+	ActionTypeNoPost     = 8
+	ActionTypeSignal     = 9
 )
 
 var actionTypeTable = map[string]uint32{
@@ -36,6 +38,8 @@ var actionTypeTable = map[string]uint32{
 	"copyfd":     ActionTypeCopyFd,
 	"geturl":     ActionTypeGetUrl,
 	"dnslookup":  ActionTypeDnsLookup,
+	"nopost":     ActionTypeNoPost,
+	"signal":     ActionTypeSignal,
 }
 
 var actionTypeStringTable = map[uint32]string{
@@ -47,6 +51,8 @@ var actionTypeStringTable = map[uint32]string{
 	ActionTypeCopyFd:     "copyfd",
 	ActionTypeGetUrl:     "geturl",
 	ActionTypeDnsLookup:  "dnslookup",
+	ActionTypeNoPost:     "nopost",
+	ActionTypeSignal:     "signal",
 }
 
 // Action argument table entry (for URL and FQDN arguments)
@@ -136,6 +142,7 @@ const (
 	argTypeS32 = 12
 	argTypeU32 = 13
 
+	argTypePath = 15
 	argTypeFile = 16
 	argTypeFd   = 17
 
@@ -155,6 +162,7 @@ var argTypeTable = map[string]uint32{
 	"skb":        argTypeSkb,
 	"string":     argTypeString,
 	"fd":         argTypeFd,
+	"path":       argTypePath,
 	"file":       argTypeFile,
 	"sock":       argTypeSock,
 	"url":        argTypeUrl,
@@ -174,6 +182,7 @@ var argTypeStringTable = map[uint32]string{
 	argTypeString:    "string",
 	argTypeFd:        "fd",
 	argTypeFile:      "file",
+	argTypePath:      "path",
 	argTypeSock:      "sock",
 	argTypeUrl:       "url",
 	argTypeFqdn:      "fqdn",
@@ -303,13 +312,13 @@ func writeMatchValuesInMap(k *KernelSelectorState, values []string, ty uint32) e
 		case argTypeS64, argTypeInt:
 			i, err := strconv.ParseInt(v, 10, 64)
 			if err != nil {
-				return fmt.Errorf("MatchArgs value %s invalid: %x", v, err)
+				return fmt.Errorf("MatchArgs value %s invalid: %w", v, err)
 			}
 			binary.LittleEndian.PutUint64(val[:], uint64(i))
 		case argTypeU64:
 			i, err := strconv.ParseUint(v, 10, 64)
 			if err != nil {
-				return fmt.Errorf("MatchArgs value %s invalid: %x", v, err)
+				return fmt.Errorf("MatchArgs value %s invalid: %w", v, err)
 			}
 			binary.LittleEndian.PutUint64(val[:], uint64(i))
 		default:
@@ -326,7 +335,7 @@ func writeMatchValuesInMap(k *KernelSelectorState, values []string, ty uint32) e
 func writeMatchValues(k *KernelSelectorState, values []string, ty uint32) error {
 	for _, v := range values {
 		switch ty {
-		case argTypeFd, argTypeFile:
+		case argTypeFd, argTypeFile, argTypePath:
 			value, size := ArgSelectorValue(v)
 			WriteSelectorUint32(k, size)
 			WriteSelectorByteArray(k, value, size)
@@ -337,25 +346,25 @@ func writeMatchValues(k *KernelSelectorState, values []string, ty uint32) error 
 		case argTypeS32, argTypeInt, argTypeSizet:
 			i, err := strconv.ParseInt(v, 10, 32)
 			if err != nil {
-				return fmt.Errorf("MatchArgs value %s invalid: %x", v, err)
+				return fmt.Errorf("MatchArgs value %s invalid: %w", v, err)
 			}
 			WriteSelectorInt32(k, int32(i))
 		case argTypeU32:
 			i, err := strconv.ParseUint(v, 10, 32)
 			if err != nil {
-				return fmt.Errorf("MatchArgs value %s invalid: %x", v, err)
+				return fmt.Errorf("MatchArgs value %s invalid: %w", v, err)
 			}
 			WriteSelectorUint32(k, uint32(i))
 		case argTypeS64:
 			i, err := strconv.ParseInt(v, 10, 64)
 			if err != nil {
-				return fmt.Errorf("MatchArgs value %s invalid: %x", v, err)
+				return fmt.Errorf("MatchArgs value %s invalid: %w", v, err)
 			}
 			WriteSelectorInt64(k, int64(i))
 		case argTypeU64:
 			i, err := strconv.ParseUint(v, 10, 64)
 			if err != nil {
-				return fmt.Errorf("MatchArgs value %s invalid: %x", v, err)
+				return fmt.Errorf("MatchArgs value %s invalid: %w", v, err)
 			}
 			WriteSelectorUint64(k, uint64(i))
 		case argTypeSock, argTypeSkb, argTypeCharIovec:
@@ -395,9 +404,24 @@ func ParseMatchArg(k *KernelSelectorState, arg *v1alpha1.ArgSelector, sig []v1al
 	WriteSelectorLength(k, moff)
 	return nil
 }
+
 func ParseMatchArgs(k *KernelSelectorState, args []v1alpha1.ArgSelector, sig []v1alpha1.KProbeArg) error {
+	max_args := 1
+	if kernels.EnableLargeProgs() {
+		max_args = 5 // we support up 5 argument filters under matchArgs with kernels >= 5.3, otherwise 1 argument
+	}
+	if len(args) > max_args {
+		return fmt.Errorf("parseMatchArgs: supports up to %d filters (%d provided)", max_args, len(args))
+	}
+	actionOffset := GetCurrentOffset(k)
 	loff := AdvanceSelectorLength(k)
-	for _, a := range args {
+	argOff := make([]uint32, 5)
+	for i := 0; i < 5; i++ {
+		argOff[i] = AdvanceSelectorLength(k)
+		WriteSelectorOffsetUint32(k, argOff[i], 0)
+	}
+	for i, a := range args {
+		WriteSelectorOffsetUint32(k, argOff[i], GetCurrentOffset(k)-actionOffset)
 		if err := ParseMatchArg(k, &a, sig); err != nil {
 			return err
 		}
@@ -430,11 +454,16 @@ func ParseMatchAction(k *KernelSelectorState, action *v1alpha1.ActionSelector, a
 		}
 		actionArgTable.AddEntry(&actionArg)
 		WriteSelectorUint32(k, uint32(actionArg.tableId.ID))
+	case ActionTypeSignal:
+		WriteSelectorUint32(k, action.ArgSig)
 	}
 	return nil
 }
 
 func ParseMatchActions(k *KernelSelectorState, actions []v1alpha1.ActionSelector, actionArgTable *idtable.Table) error {
+	if len(actions) > 3 {
+		return fmt.Errorf("only %d actions are support for selector (current number of values is %d)", 3, len(actions))
+	}
 	loff := AdvanceSelectorLength(k)
 	for _, a := range actions {
 		if err := ParseMatchAction(k, &a, actionArgTable); err != nil {
@@ -442,8 +471,7 @@ func ParseMatchActions(k *KernelSelectorState, actions []v1alpha1.ActionSelector
 		}
 	}
 
-	// Zero length value is also default ActionTypePost action
-	// that bpf program reads when no other action is specified.
+	// No action (size value 4) defaults to post action.
 	WriteSelectorLength(k, loff)
 	return nil
 }
@@ -740,7 +768,7 @@ func InitKernelSelectors(selectors []v1alpha1.KProbeSelector, args []v1alpha1.KP
 
 func InitKernelSelectorState(selectors []v1alpha1.KProbeSelector, args []v1alpha1.KProbeArg,
 	actionArgTable *idtable.Table) (*KernelSelectorState, error) {
-	kernelSelectors := newKernelSelectorState()
+	kernelSelectors := NewKernelSelectorState()
 
 	WriteSelectorUint32(kernelSelectors, uint32(len(selectors)))
 	soff := make([]uint32, len(selectors))
@@ -766,6 +794,26 @@ func HasOverride(spec *v1alpha1.KProbeSpec) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+func HasEarlyBinaryFilter(selectors []v1alpha1.KProbeSelector) bool {
+	if len(selectors) == 0 {
+		return false
+	}
+	for _, s := range selectors {
+		if len(s.MatchPIDs) > 0 ||
+			len(s.MatchNamespaces) > 0 ||
+			len(s.MatchCapabilities) > 0 ||
+			len(s.MatchNamespaceChanges) > 0 ||
+			len(s.MatchCapabilityChanges) > 0 ||
+			len(s.MatchArgs) > 0 {
+			return false
+		}
+	}
+	if len(selectors) == 1 && len(selectors[0].MatchBinaries) > 0 {
+		return true
 	}
 	return false
 }

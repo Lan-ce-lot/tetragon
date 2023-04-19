@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/cilium/tetragon/pkg/logger"
 )
@@ -20,6 +21,7 @@ type config struct {
 	BTF             string
 	Verbosity       int
 	ForceSmallProgs bool
+	ForceLargeProgs bool
 
 	EnableCilium      bool
 	EnableProcessNs   bool
@@ -32,7 +34,6 @@ type config struct {
 	GopsAddr string
 
 	CiliumDir string
-	MapDir    string
 	BpfDir    string
 
 	LogOpts map[string]string
@@ -40,11 +41,35 @@ type config struct {
 	RBSize      int
 	RBSizeTotal int
 
+	ProcessCacheSize int
+	DataCacheSize    int
+
+	MetricsServer string
+	ServerAddress string
+	ConfigFile    string
+
+	ExportFilename             string
+	ExportFileMaxSizeMB        int
+	ExportFileRotationInterval time.Duration
+	ExportFileMaxBackups       int
+	ExportFileCompress         bool
+	ExportRateLimit            int
+
+	// Export aggregation options
+	EnableExportAggregation     bool
+	ExportAggregationWindowSize time.Duration
+	ExportAggregationBufferSize uint64
+
+	CpuProfile string
+	MemProfile string
+	PprofAddr  string
+
 	EventQueueSize uint
 
 	ReleasePinned bool
 
-	EnablePolicyFilter bool
+	EnablePolicyFilter      bool
+	EnablePolicyFilterDebug bool
 }
 
 var (

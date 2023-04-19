@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/cilium/tetragon/pkg/k8s/apis/cilium.io/v1alpha1"
+	"github.com/cilium/tetragon/pkg/policyfilter"
 	"github.com/cilium/tetragon/pkg/sensors/program"
+	"github.com/cilium/tetragon/pkg/tracingpolicy"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -20,7 +22,7 @@ type dummyHandler struct {
 	e error
 }
 
-func (d *dummyHandler) SpecHandler(raw interface{}) (*Sensor, error) {
+func (d *dummyHandler) PolicyHandler(p tracingpolicy.TracingPolicy, fid policyfilter.PolicyID) (*Sensor, error) {
 	return d.s, d.e
 }
 
@@ -29,13 +31,13 @@ func TestAddPolicy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	RegisterSpecHandlerAtInit("dummy", &dummyHandler{s: &Sensor{Name: "dummy-sensor"}})
+	RegisterPolicyHandlerAtInit("dummy", &dummyHandler{s: &Sensor{Name: "dummy-sensor"}})
 	t.Cleanup(func() {
-		delete(registeredSpecHandlers, "dummy")
+		delete(registeredPolicyHandlers, "dummy")
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "", nil)
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {
@@ -55,15 +57,15 @@ func TestAddPolicies(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	RegisterSpecHandlerAtInit("dummy1", &dummyHandler{s: &Sensor{Name: "dummy-sensor1"}})
-	RegisterSpecHandlerAtInit("dummy2", &dummyHandler{s: &Sensor{Name: "dummy-sensor2"}})
+	RegisterPolicyHandlerAtInit("dummy1", &dummyHandler{s: &Sensor{Name: "dummy-sensor1"}})
+	RegisterPolicyHandlerAtInit("dummy2", &dummyHandler{s: &Sensor{Name: "dummy-sensor2"}})
 	t.Cleanup(func() {
-		delete(registeredSpecHandlers, "dummy1")
-		delete(registeredSpecHandlers, "dummy2")
+		delete(registeredPolicyHandlers, "dummy1")
+		delete(registeredPolicyHandlers, "dummy2")
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "", nil)
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {
@@ -86,15 +88,15 @@ func TestAddPolicySpecError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	RegisterSpecHandlerAtInit("dummy", &dummyHandler{s: &Sensor{Name: "dummy-sensor"}})
-	RegisterSpecHandlerAtInit("spec-fail", &dummyHandler{e: errors.New("spec load is expected to fail: failed")})
+	RegisterPolicyHandlerAtInit("dummy", &dummyHandler{s: &Sensor{Name: "dummy-sensor"}})
+	RegisterPolicyHandlerAtInit("spec-fail", &dummyHandler{e: errors.New("spec load is expected to fail: failed")})
 	t.Cleanup(func() {
-		delete(registeredSpecHandlers, "dummy")
-		delete(registeredSpecHandlers, "spec-fail")
+		delete(registeredPolicyHandlers, "dummy")
+		delete(registeredPolicyHandlers, "spec-fail")
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "", nil)
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {
@@ -115,18 +117,18 @@ func TestAddPolicyLoadError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	RegisterSpecHandlerAtInit("dummy", &dummyHandler{s: &Sensor{Name: "dummy-sensor"}})
-	RegisterSpecHandlerAtInit("load-fail", &dummyHandler{s: &Sensor{
+	RegisterPolicyHandlerAtInit("dummy", &dummyHandler{s: &Sensor{Name: "dummy-sensor"}})
+	RegisterPolicyHandlerAtInit("load-fail", &dummyHandler{s: &Sensor{
 		Name:  "dummy-sensor",
 		Progs: []*program.Program{{Name: "bpf-program-that-does-not-exist"}},
 	}})
 	t.Cleanup(func() {
-		delete(registeredSpecHandlers, "dummy")
-		delete(registeredSpecHandlers, "load-fail")
+		delete(registeredPolicyHandlers, "dummy")
+		delete(registeredPolicyHandlers, "load-fail")
 	})
 
 	policy := v1alpha1.TracingPolicy{}
-	mgr, err := StartSensorManager("", "", "")
+	mgr, err := StartSensorManager("", "", nil)
 	assert.NoError(t, err)
 	t.Cleanup(func() {
 		if err := mgr.StopSensorManager(ctx); err != nil {

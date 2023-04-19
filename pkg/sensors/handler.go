@@ -7,21 +7,20 @@ import (
 	"fmt"
 
 	"github.com/cilium/tetragon/api/v1/tetragon"
-	"github.com/cilium/tetragon/pkg/logger"
 	"github.com/cilium/tetragon/pkg/policyfilter"
 	"github.com/cilium/tetragon/pkg/tracingpolicy"
 )
 
 type handler struct {
 	// map of sensor collections: name -> collection
-	collections               map[string]collection
-	bpfDir, mapDir, ciliumDir string
+	collections       map[string]collection
+	bpfDir, ciliumDir string
 
 	nextPolicyID uint64
 	pfState      policyfilter.State
 }
 
-func newHandler(bpfDir, mapDir, ciliumDir string) (*handler, error) {
+func newHandler(bpfDir, ciliumDir string) (*handler, error) {
 	pfState, err := policyfilter.GetState()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize policy filter state: %w", err)
@@ -30,12 +29,14 @@ func newHandler(bpfDir, mapDir, ciliumDir string) (*handler, error) {
 	return &handler{
 		collections: map[string]collection{},
 		bpfDir:      bpfDir,
-		mapDir:      mapDir,
 		ciliumDir:   ciliumDir,
 		pfState:     pfState,
-		// NB: policy ids start with 1, so that they can be used for filtering. In policy
-		// filtering code, a policy id of 0 means no filtering.
-		nextPolicyID: 1,
+		// NB: we are using policy ids for filtering, so we start with
+		// the first valid id. This is because value 0 is reserved to
+		// indicate that there is no filtering in the bpf side.
+		// FirstValidFilterPolicyID is 1, but this might change if we
+		// introduce more special values in the future.
+		nextPolicyID: policyfilter.FirstValidFilterPolicyID,
 	}, nil
 }
 
@@ -47,16 +48,7 @@ func (h *handler) allocPolicyID() uint64 {
 
 // revive:disable:exported
 func SensorsFromPolicy(tp tracingpolicy.TracingPolicy, filterID policyfilter.PolicyID) ([]*Sensor, error) {
-	sensors, err := sensorsFromSpecHandlers(tp)
-	if err != nil {
-		return nil, err
-	}
-	policySensors, err := sensorsFromPolicyHandlers(tp, filterID)
-	if err != nil {
-		return nil, err
-	}
-	sensors = append(sensors, policySensors...)
-	return sensors, nil
+	return sensorsFromPolicyHandlers(tp, filterID)
 }
 
 // revive:enable:exported
@@ -66,11 +58,12 @@ func (h *handler) addTracingPolicy(op *tracingPolicyAdd) error {
 		return fmt.Errorf("failed to add tracing policy %s, a sensor collection with the name already exists", op.name)
 	}
 	tpID := h.allocPolicyID()
-	filterID := policyfilter.PolicyID(0)
+	filterID := policyfilter.NoFilterID
 
 	// This is a namespaced policy, so update policy filter state before loading the sensors
-	// NB: the filterID is set to a non-zero value only if we have a namespaced policy and need
-	// to apply filtering.
+	// NB: the filterID is set to a non-zero value only if we need to apply
+	// filtering, so the policy handlers will receive a valid filter value
+	// only if we want to apply filtering and NoFilterID otherwise.
 	if tpNs, ok := op.tp.(tracingpolicy.TracingPolicyNamespaced); ok {
 		filterID = policyfilter.PolicyID(tpID)
 		if err := h.pfState.AddPolicy(filterID, tpNs.TpNamespace()); err != nil {
@@ -78,15 +71,10 @@ func (h *handler) addTracingPolicy(op *tracingPolicyAdd) error {
 		}
 	}
 
-	sensors, err := sensorsFromSpecHandlers(op.tp)
+	sensors, err := sensorsFromPolicyHandlers(op.tp, filterID)
 	if err != nil {
 		return err
 	}
-	policySensors, err := sensorsFromPolicyHandlers(op.tp, filterID)
-	if err != nil {
-		return err
-	}
-	sensors = append(sensors, policySensors...)
 
 	col := collection{
 		sensors:         sensors,
@@ -94,7 +82,7 @@ func (h *handler) addTracingPolicy(op *tracingPolicyAdd) error {
 		tracingpolicy:   op.tp,
 		tracingpolicyID: uint64(tpID),
 	}
-	if err := col.load(op.ctx, h.bpfDir, h.mapDir, h.ciliumDir, nil); err != nil {
+	if err := col.load(op.ctx, h.bpfDir, h.ciliumDir, nil); err != nil {
 		return err
 	}
 
@@ -174,7 +162,7 @@ func (h *handler) enableSensor(op *sensorEnable) error {
 	// The idea is that sensors can get a handle to the stt manager when
 	// they are loaded which they can use to attach stt information to
 	// events. Need to revsit this, and until we do we keep LoadArg.
-	return col.load(op.ctx, h.bpfDir, h.mapDir, h.ciliumDir, &LoadArg{STTManagerHandle: op.sttManagerHandle})
+	return col.load(op.ctx, h.bpfDir, h.ciliumDir, &LoadArg{STTManagerHandle: op.sttManagerHandle})
 }
 
 func (h *handler) disableSensor(op *sensorDisable) error {
@@ -248,29 +236,6 @@ func (h *handler) configGet(op *sensorConfigGet) error {
 	}
 
 	return nil
-}
-func sensorsFromSpecHandlers(tp tracingpolicy.TracingPolicy) ([]*Sensor, error) {
-	var sensors []*Sensor
-	_, isNamespaced := tp.(tracingpolicy.TracingPolicyNamespaced)
-	spec := tp.TpSpec()
-	log := logger.GetLogger().WithField("policy-name", tp.TpName())
-
-	for n, s := range registeredSpecHandlers {
-		if isNamespaced {
-			// NB: requires using policyHandler
-			log.WithField("sensor-name", n).Warn("sensor will be ignored because it cannot handle namespaced tracing policy")
-		}
-		var sensor *Sensor
-		sensor, err := s.SpecHandler(spec)
-		if err != nil {
-			return nil, fmt.Errorf("spec handler %s failed: %w", n, err)
-		}
-		if sensor == nil {
-			continue
-		}
-		sensors = append(sensors, sensor)
-	}
-	return sensors, nil
 }
 
 func sensorsFromPolicyHandlers(tp tracingpolicy.TracingPolicy, filterID policyfilter.PolicyID) ([]*Sensor, error) {

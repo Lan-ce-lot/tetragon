@@ -27,18 +27,33 @@ type SensorStatus struct {
 // The purpose of this goroutine is to serialize loading and unloading of
 // sensors as requested from different goroutines (e.g., different GRPC
 // clients).
-func StartSensorManager(bpfDir, mapDir, ciliumDir string) (*Manager, error) {
+//
+// if waitChan is not nil, the serving of sensor requests will block until
+// something is received. The intention of this is to allow the main function
+// to first load the base sensor before the sensor manager starts loading other sensors.
+func StartSensorManager(
+	bpfDir, ciliumDir string,
+	waitChan chan struct{},
+) (*Manager, error) {
 	c := make(chan sensorOp)
 	m := Manager{
 		STTManager: sttManager.StartSttManager(),
 		sensorCtl:  c,
 	}
-	handler, err := newHandler(bpfDir, mapDir, ciliumDir)
+	handler, err := newHandler(bpfDir, ciliumDir)
 	if err != nil {
 		return nil, err
 	}
 
 	go func() {
+
+		// wait until start serving requests
+		if waitChan != nil {
+			logger.GetLogger().Infof("sensor controller waiting on channel")
+			<-waitChan
+			logger.GetLogger().Infof("sensor controller starts")
+		}
+
 		done := false
 		for !done {
 			op_ := <-c
@@ -271,10 +286,10 @@ func (h *Manager) LogSensorsAndProbes(ctx context.Context) {
 	log.WithField("sensors", strings.Join(names, ", ")).Info("Available sensors")
 
 	names = []string{}
-	for n := range registeredSpecHandlers {
+	for n := range registeredPolicyHandlers {
 		names = append(names, n)
 	}
-	log.WithField("spec-handlers", strings.Join(names, ", ")).Info("Registered tracing sensors")
+	log.WithField("policy-handlers", strings.Join(names, ", ")).Info("Registered sensors (policy-handlers)")
 
 	names = []string{}
 	for n := range registeredProbeLoad {
